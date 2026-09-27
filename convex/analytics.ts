@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import {
   can,
@@ -111,32 +112,32 @@ export const dashboardData = query({
     }
 
     const admin = isAdmin(employee.role);
-    const [pendingLeave, pendingCorrections, pendingDevices, unread] = admin
-      ? await Promise.all([
-          ctx.db
-            .query("leaveRequests")
-            .withIndex("byCompanyStatus", (q) =>
-              q.eq("companyId", employee.companyId).eq("status", "pending"),
-            )
-            .collect(),
-          ctx.db
-            .query("correctionRequests")
-            .withIndex("byCompanyStatus", (q) =>
-              q.eq("companyId", employee.companyId).eq("status", "pending"),
-            )
-            .collect(),
-          ctx.db
-            .query("registeredDevices")
-            .withIndex("byCompany", (q) => q.eq("companyId", employee.companyId))
-            .collect(),
-          ctx.db
-            .query("notifications")
-            .withIndex("byCompanyUnread", (q) =>
-              q.eq("companyId", employee.companyId).eq("readAt", undefined),
-            )
-            .collect(),
-        ])
-      : [[], [], [], []];
+
+    // Typed as explicit arrays so the query's return type stays a single shape
+    // rather than a union that TypeScript can only partly narrow.
+    let pendingLeave: Doc<"leaveRequests">[] = [];
+    let pendingCorrections: Doc<"correctionRequests">[] = [];
+    let pendingDevices: Doc<"registeredDevices">[] = [];
+    if (admin) {
+      [pendingLeave, pendingCorrections, pendingDevices] = await Promise.all([
+        ctx.db
+          .query("leaveRequests")
+          .withIndex("byCompanyStatus", (q) =>
+            q.eq("companyId", employee.companyId).eq("status", "pending"),
+          )
+          .collect(),
+        ctx.db
+          .query("correctionRequests")
+          .withIndex("byCompanyStatus", (q) =>
+            q.eq("companyId", employee.companyId).eq("status", "pending"),
+          )
+          .collect(),
+        ctx.db
+          .query("registeredDevices")
+          .withIndex("byCompany", (q) => q.eq("companyId", employee.companyId))
+          .collect(),
+      ]);
+    }
 
     const devicesWithoutOne = admin
       ? active.filter(

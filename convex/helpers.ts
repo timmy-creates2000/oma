@@ -81,6 +81,20 @@ export async function requireEmployee(
   return employee;
 }
 
+/**
+ * The signed-in user's `users` document id.
+ *
+ * Do NOT use `identity.subject` for this: Convex Auth issues a composite
+ * `userId|sessionId` subject, which fails `v.id("users")` validation.
+ */
+export async function currentUserId(
+  ctx: QueryCtx | MutationCtx,
+): Promise<Id<"users">> {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("You must be signed in");
+  return userId;
+}
+
 export async function requirePerm(
   ctx: QueryCtx | MutationCtx,
   perm: Perm,

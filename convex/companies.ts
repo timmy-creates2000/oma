@@ -3,6 +3,7 @@ import type { Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import {
   atMinute,
+  currentUserId,
   dateOnly,
   dayKey,
   minutesOfDay,
@@ -82,7 +83,7 @@ export const createCompany = mutation({
     if (!identity) throw new Error("You must be signed in");
     const email = identity.email;
     if (!email) throw new Error("Your account has no email address");
-    const userId = identity.subject as Id<"users">;
+    const userId = await currentUserId(ctx);
 
     // One company per user, enforced the same way the SQL version did it.
     const existing = await ctx.db
@@ -167,6 +168,7 @@ export const joinCompany = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity?.email) throw new Error("You must be signed in with an email");
+    const userId = await currentUserId(ctx);
 
     const company = await ctx.db
       .query("companies")
@@ -176,9 +178,7 @@ export const joinCompany = mutation({
 
     const already = await ctx.db
       .query("employees")
-      .withIndex("byUser", (q) =>
-        q.eq("userId", identity.subject as Id<"users">),
-      )
+      .withIndex("byUser", (q) => q.eq("userId", userId))
       .first();
     if (already) throw new Error("You already belong to a company");
 
@@ -190,7 +190,7 @@ export const joinCompany = mutation({
 
     const employeeId = await ctx.db.insert("employees", {
       companyId: company._id,
-      userId: identity.subject as Id<"users">,
+      userId,
       email: identity.email,
       name: identity.name ?? identity.email,
       employeeCode: `EMP-${String(count.length + 1).padStart(3, "0")}`,

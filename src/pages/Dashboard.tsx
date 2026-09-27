@@ -34,12 +34,13 @@ export default function Dashboard() {
 
   // Close anything left open past the company's auto clock-out limit.
   useEffect(() => {
-    if (!ws || !dash?.approvals) return;
+    if (!ws || !dash?.approvals?.isAdmin) return;
     void sweep({}).catch(() => undefined);
   }, [ws, dash?.approvals, sweep]);
 
   const myName = ws?.employee.name ?? "there";
   const mySession = today?.session ?? null;
+  const approvals = dash?.approvals;
 
   return (
     <AppShell title="Dashboard">
@@ -96,14 +97,14 @@ export default function Dashboard() {
             <StatTile
               icon={Fingerprint}
               label="People without a device"
-              value={dash.approvals?.peopleWithoutDevice ?? 0}
+              value={approvals?.peopleWithoutDevice ?? 0}
               tone="text-orange-600"
             />
             <StatTile
               icon={Activity}
               label="Pending reviews"
-              value={(dash.approvals?.leave ?? 0) + (dash.approvals?.corrections ?? 0)}
-              hint={`${dash.approvals?.leave ?? 0} leave · ${dash.approctions?.corrections ?? 0} corrections`}
+              value={(approvals?.leave ?? 0) + (approvals?.corrections ?? 0)}
+              hint={`${approvals?.leave ?? 0} leave · ${approvals?.corrections ?? 0} corrections`}
             />
           </div>
 
@@ -191,31 +192,31 @@ export default function Dashboard() {
             <GlassCard className="p-5">
               <h3 className="mb-3 font-semibold">Needs attention</h3>
               <div className="space-y-2">
-                {(dash.approvals?.leave ?? 0) > 0 && (
+                {(approvals?.leave ?? 0) > 0 && (
                   <ActionRow icon={Plane} tone="text-sky-600"
-                    title={`${dash.approvals?.leave} leave request${(dash.approvals?.leave ?? 0) > 1 ? "s" : ""} awaiting review`}
+                    title={`${approvals?.leave} leave request${(approvals?.leave ?? 0) > 1 ? "s" : ""} awaiting review`}
                     onClick={() => navigate("/leave-admin")} />
                 )}
-                {(dash.approvals?.corrections ?? 0) > 0 && (
+                {(approvals?.corrections ?? 0) > 0 && (
                   <ActionRow icon={TimerReset} tone="text-amber-600"
-                    title={`${dash.approvals?.corrections} attendance correction${(dash.approvals?.corrections ?? 0) > 1 ? "s" : ""} to review`}
+                    title={`${approvals?.corrections} attendance correction${(approvals?.corrections ?? 0) > 1 ? "s" : ""} to review`}
                     onClick={() => navigate("/corrections")} />
                 )}
-                {(dash.approvals?.devices ?? 0) > 0 && (
+                {(approvals?.devices ?? 0) > 0 && (
                   <ActionRow icon={Fingerprint} tone="text-orange-600"
-                    title={`${dash.approvals?.devices} device replacement${(dash.approvals?.devices ?? 0) > 1 ? "s" : ""} waiting`}
+                    title={`${approvals?.devices} device replacement${(approvals?.devices ?? 0) > 1 ? "s" : ""} waiting`}
                     onClick={() => navigate("/devices")} />
                 )}
-                {(dash.approvals?.peopleWithoutDevice ?? 0) > 0 && (
+                {(approvals?.peopleWithoutDevice ?? 0) > 0 && (
                   <ActionRow icon={AlertTriangle} tone="text-rose-600"
-                    title={`${dash.approvals?.peopleWithoutDevice} ${(dash.approvals?.peopleWithoutDevice ?? 0) === 1 ? "person has" : "people have"} no registered device`}
+                    title={`${approvals?.peopleWithoutDevice} ${(approvals?.peopleWithoutDevice ?? 0) === 1 ? "person has" : "people have"} no registered device`}
                     onClick={() => navigate("/employees")} />
                 )}
-                {dash.approvals &&
-                  dash.approvals.leave === 0 &&
-                  dash.approvals.corrections === 0 &&
-                  dash.approvals.devices === 0 &&
-                  dash.approvals.peopleWithoutDevice === 0 && (
+                {approvals &&
+                  approvals.leave === 0 &&
+                  approvals.corrections === 0 &&
+                  approvals.devices === 0 &&
+                  approvals.peopleWithoutDevice === 0 && (
                     <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
                   )}
               </div>

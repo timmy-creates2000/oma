@@ -16,6 +16,7 @@ import type * as companies from "../companies.js";
 import type * as corrections from "../corrections.js";
 import type * as devices from "../devices.js";
 import type * as helpers from "../helpers.js";
+import type * as http from "../http.js";
 import type * as leave from "../leave.js";
 import type * as me from "../me.js";
 import type * as notifications from "../notifications.js";
@@ -36,6 +37,7 @@ declare const fullApi: ApiFromModules<{
   corrections: typeof corrections;
   devices: typeof devices;
   helpers: typeof helpers;
+  http: typeof http;
   leave: typeof leave;
   me: typeof me;
   notifications: typeof notifications;
