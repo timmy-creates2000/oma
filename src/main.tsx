@@ -1,12 +1,13 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
+import { ConvexAuthProvider } from "@convex-dev/auth/react";
+import { ConvexProvider } from "convex/react";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "./index.css";
-import { SupabaseAuthProvider } from "@/hooks/use-supabase-auth";
-import { hasSupabaseCreds } from "@/lib/sb";
+import { convex } from "@/lib/convex";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
@@ -118,32 +119,6 @@ function RouteSyncer() {
   return null;
 }
 
-function MissingCredsNotice() {
-  return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="glass-strong glass-edge max-w-md rounded-3xl p-8 text-center">
-        <h1 className="text-lg font-bold">Supabase keys needed</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          OfficeFlow is now powered by Supabase. Add{" "}
-          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">VITE_SUPABASE_URL</code>{" "}
-          and{" "}
-          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">VITE_SUPABASE_ANON_KEY</code>{" "}
-          in the Keys/API keys tab, and run the three SQL files in{" "}
-          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">supabase/</code>{" "}
-          in the Supabase SQL editor, then reload.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-/** Signed-in users without a workspace land on onboarding. */
-function OnboardingGate({ children }: { children: React.ReactNode }) {
-  const Onboard = lazy(() => import("./pages/Onboarding.tsx"));
-  return <>{children}</>;
-}
-void OnboardingGate;
-
 const gate = (node: React.ReactNode) => <RequireAuthGate>{node}</RequireAuthGate>;
 
 function RequireAuthGate({ children }: { children: React.ReactNode }) {
@@ -164,8 +139,8 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
-      <SupabaseAuthProvider>
-        {hasSupabaseCreds ? (
+      <ConvexProvider client={convex}>
+        <ConvexAuthProvider client={convex}>
           <BrowserRouter>
             <RouteSyncer />
             <Suspense fallback={<RouteLoading />}>
@@ -192,11 +167,9 @@ createRoot(document.getElementById("root")!).render(
               </Routes>
             </Suspense>
           </BrowserRouter>
-        ) : (
-          <MissingCredsNotice />
-        )}
-        <Toaster />
-      </SupabaseAuthProvider>
+          <Toaster />
+        </ConvexAuthProvider>
+      </ConvexProvider>
     </RootErrorBoundary>
   </StrictMode>,
 )

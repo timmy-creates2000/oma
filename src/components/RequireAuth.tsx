@@ -3,13 +3,13 @@ import {
   Card, CardContent, CardDescription, CardFooter,
   CardHeader, CardTitle,
 } from "@/components/ui/card";
-import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
+import { useSession } from "@/hooks/use-auth";
 import { Loader2, Lock } from "lucide-react";
 import type { ReactNode } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router";
 
 /**
- * Wraps a route that requires a signed-in user (Supabase session).
+ * Wraps a route that requires a signed-in user.
  * Signed-out visitors get an explanatory screen with a sign-in button;
  * pass `redirectImmediately` to bounce straight to /auth with returnTo.
  */
@@ -24,11 +24,11 @@ export function RequireAuth({
   description?: string;
   redirectImmediately?: boolean;
 }) {
-  const { session, loading } = useSupabaseAuth();
+  const { isAuthenticated, isLoading } = useSession();
   const navigate = useNavigate();
   const location = useLocation();
 
-  if (loading) {
+  if (isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
@@ -36,7 +36,7 @@ export function RequireAuth({
     );
   }
 
-  if (!session) {
+  if (!isAuthenticated) {
     const returnTo = `${location.pathname}${location.search}`;
     const signInHref = `/auth?returnTo=${encodeURIComponent(returnTo)}`;
 
@@ -57,7 +57,7 @@ export function RequireAuth({
             <CardDescription>{description}</CardDescription>
           </CardHeader>
           <CardContent className="text-center text-sm text-muted-foreground">
-            You'll come straight back to this page once you're signed in.
+            You&rsquo;ll come straight back to this page once you&rsquo;re signed in.
           </CardContent>
           <CardFooter className="flex flex-col gap-2">
             <Button className="w-full" onClick={() => navigate(signInHref)}>

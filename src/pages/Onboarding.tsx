@@ -1,6 +1,4 @@
-import { useWorkspace } from "@/hooks/use-workspace";
-import { supabase, err } from "@/lib/sb";
-import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
+import { useMutation } from "convex/react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -8,16 +6,26 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GlassCard } from "@/components/glass";
+import { useSession } from "@/hooks/use-auth";
+import { api, err } from "@/lib/api";
 import {
   Building2, Sparkles, Users2, ArrowRight, Loader2, Clock, Mail,
 } from "lucide-react";
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+function toMinutes(time: string): number {
+  const [h, m] = time.split(":").map(Number);
+  return h * 60 + m;
+}
+
 export default function Onboarding() {
   const navigate = useNavigate();
-  const { refresh } = useWorkspace();
-  const { user } = useSupabaseAuth();
+  const { user, signOut } = useSession();
+  const createCompany = useMutation(api.companies.createCompany);
+  const seedDemo = useMutation(api.companies.seedDemo);
+  const joinCompany = useMutation(api.companies.joinCompany);
+
   const [mode, setMode] = useState<"create" | "demo" | "join">("create");
   const [companyName, setCompanyName] = useState("");
   const [industry, setIndustry] = useState("");
@@ -28,58 +36,37 @@ export default function Onboarding() {
   const [joinCode, setJoinCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const finish = async (companyId: string, seed: boolean) => {
-    if (seed) {
-      const { error } = await supabase.rpc("seed_demo", { p_company: companyId });
-      if (error) throw error;
-    }
-    refresh();
-    toast.success(seed ? "Demo workspace ready!" : "Workspace created!");
-    navigate("/dashboard");
-  };
-
+  // Once a company exists the live myWorkspace query flips from null to data,
+  // and WorkspaceGate swaps this screen for the app automatically.
   const handleCreate = async (seed: boolean) => {
-    const toMinutes = (t: string) => {
-      const [h, m] = t.split(":").map(Number);
-      return h * 60 + m;
-    };
-    if (seed) {
-      setBusy(true);
-      try {
-        const name = companyName.trim() || "Northwind Labs";
-        const { data, error } = await supabase.rpc("create_company", {
-          p_name: name,
-          p_industry: industry.trim() || "Technology",
-          p_start: toMinutes(start),
-          p_end: toMinutes(end),
-          p_grace: Number(grace) || 10,
-          p_work_days: workDays,
-        });
-        if (error) throw error;
-        await finish(data as string, true);
-      } catch (e) {
-        toast.error(err(e));
-      } finally {
-        setBusy(false);
-      }
-      return;
+    if (!seed && !companyName.trim()) {
+      return toast.error("Company name is required");
+    }
+    if (toMinutes(end) <= toMinutes(start)) {
+      return toast.error("End time must be after start time");
+    }
+    if (workDays.length === 0) {
+      return toast.error("Pick at least one working day");
     }
 
-    if (!companyName.trim()) return toast.error("Company name is required");
-    if (toMinutes(end) <= toMinutes(start)) return toast.error("End time must be after start time");
-    if (workDays.length === 0) return toast.error("Pick at least one working day");
     setBusy(true);
     try {
-      const { data, error } = await supabase.rpc("create_company", {
-        p_name: companyName.trim(),
-        p_industry: industry.trim() || null,
-        p_start: toMinutes(start),
-        p_end: toMinutes(end),
-        p_grace: Number(grace) || 10,
-        p_work_days: workDays,
+      const { companyId } = await createCompany({
+        name: companyName.trim() || "Northwind Labs",
+        industry: industry.trim() || "Technology",
+        startMinute: toMinutes(start),
+        endMinute: toMinutes(end),
+        lateGraceMinutes: Number(grace) || 10,
+        workDays,
+        geoEnabled: false,
       });
-      if (error) throw error;
-      await finish(data as string, false);
+      if (seed) {
+        await seedDemo({ companyId });
+        toast.success("Demo workspace ready!");
+      } else {
+        toast.success("Workspace created!");
+      }
+      navigate("/dashboard");
     } catch (e) {
       toast.error(err(e));
     } finally {
@@ -91,9 +78,9 @@ export default function Onboarding() {
     if (!joinCode.trim()) return toast.error("Enter an invite code");
     setBusy(true);
     try {
-      const { data, error } = await supabase.rpc("join_company", { p_code: joinCode.trim() });
-      if (error) throw error;
-      await finish(data as string, false);
+      await joinCompany({ slug: joinCode.trim() });
+      toast.success("Welcome aboard!");
+      navigate("/dashboard");
     } catch (e) {
       toast.error(err(e));
     } finally {
@@ -192,7 +179,7 @@ export default function Onboarding() {
               {busy ? <Loader2 className="size-4 animate-spin" /> : <>Create workspace <ArrowRight className="size-4" /></>}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              You can load the demo dataset afterwards from onboarding's Demo tab.
+              Want to explore first? Switch to the Demo tab to load a full sample office.
             </p>
           </div>
         )}
@@ -203,7 +190,7 @@ export default function Onboarding() {
               <Sparkles className="mx-auto mb-2 size-8 text-primary" />
               <h3 className="font-semibold">Load the demo workspace</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                Creates "Northwind Labs" with 21 people, 30 days of realistic attendance,
+                Creates &ldquo;Northwind Labs&rdquo; with 21 people, 30 days of realistic attendance,
                 leave requests, devices, corrections and notifications.
               </p>
             </div>
@@ -222,13 +209,12 @@ export default function Onboarding() {
               <Input
                 id="jcode"
                 className="mt-1.5"
-                placeholder="acme-inc:EMP-005"
+                placeholder="acme-inc-1a2b3"
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
               />
               <p className="mt-2 text-xs text-muted-foreground">
-                Ask HR for the company slug and your seat code (e.g. <code>acme-inc:EMP-005</code>).
-                If a seat was pre-created with your email, the company slug alone is enough.
+                Ask HR for your company&rsquo;s invite code. You&rsquo;ll join as an employee.
               </p>
             </div>
             <Button className="w-full" size="lg" disabled={busy} onClick={handleJoin}>
@@ -236,6 +222,12 @@ export default function Onboarding() {
             </Button>
           </div>
         )}
+
+        <div className="mt-6 border-t border-white/50 pt-4 text-center">
+          <Button variant="ghost" size="sm" onClick={() => signOut()}>
+            Sign out
+          </Button>
+        </div>
       </GlassCard>
     </div>
   );

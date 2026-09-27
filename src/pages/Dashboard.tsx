@@ -2,18 +2,17 @@ import { AppShell, hasPerm } from "@/components/AppShell";
 import { GlassCard, StatTile, PageHeader } from "@/components/glass";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useMutation, useQuery } from "convex/react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar,
 } from "recharts";
 import {
   Users, UserCheck, Clock3, TimerReset, CalendarOff, Plane,
-  Building2, ArrowRight, LogIn, LogOut, AlertTriangle, Activity, ScanLine,
+  Building2, ArrowRight, LogIn, LogOut, AlertTriangle, Activity, ScanLine, Fingerprint,
 } from "lucide-react";
 import { useNavigate } from "react-router";
-import { useEffect, useState } from "react";
-import { supabase, fmtTime, err, type DashboardData, type Session } from "@/lib/sb";
-import { useWorkspace } from "@/hooks/use-workspace";
-import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
+import { useEffect } from "react";
+import { api, fmtTime } from "@/lib/api";
 
 const DAY_FMT = (d: string) =>
   new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
@@ -27,53 +26,20 @@ const tooltipStyle = {
 } as const;
 
 export default function Dashboard() {
-  const { user } = useSupabaseAuth();
-  const { ws } = useWorkspace();
   const navigate = useNavigate();
-  const [dash, setDash] = useState<DashboardData | null>(null);
-  const [today, setToday] = useState<Session | null>(null);
+  const dash = useQuery(api.analytics.dashboardData);
+  const today = useQuery(api.attendance.todayStatus);
+  const ws = useQuery(api.companies.myWorkspace);
+  const sweep = useMutation(api.attendance.autoClockoutSweep);
 
-  // load dashboard data + my session, refresh on realtime inserts
+  // Close anything left open past the company's auto clock-out limit.
   useEffect(() => {
-    if (!ws) return;
-    const companyId = ws.employee.company_id;
-    let channel: ReturnType<typeof supabase.channel> | null = null;
+    if (!ws || !dash?.approvals) return;
+    void sweep({}).catch(() => undefined);
+  }, [ws, dash?.approvals, sweep]);
 
-    async function load() {
-      const [{ data }, { data: sessions }] = await Promise.all([
-        supabase.rpc("dashboard_data"),
-        supabase
-          .from("attendance_sessions")
-          .select("*")
-          .eq("employee_id", ws!.employee.id)
-          .eq("day_key", new Date().toISOString().slice(0, 10))
-          .order("clock_in_at", { ascending: false })
-          .limit(1),
-      ]);
-      if (data) setDash(data as unknown as DashboardData);
-      setToday((sessions?.[0] as unknown as Session) ?? null);
-    }
-    load();
-    const sweep = async () => {
-      try { await supabase.rpc("auto_clockout_sweep"); } catch { /* noop */ }
-    };
-    void sweep();
-
-    channel = supabase
-      .channel("of-dashboard")
-      .on("postgres_changes", { event: "*", schema: "public", table: "attendance_sessions", filter: `company_id=eq.${companyId}` }, () => load())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "attendance_events", filter: `company_id=eq.${companyId}` }, () => load())
-      .subscribe();
-
-    const iv = setInterval(load, 60000);
-    return () => {
-      if (channel) supabase.removeChannel(channel);
-      clearInterval(iv);
-    };
-  }, [ws]);
-
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const myName = ws?.employee.name ?? user?.email ?? "there";
+  const myName = ws?.employee.name ?? "there";
+  const mySession = today?.session ?? null;
 
   return (
     <AppShell title="Dashboard">
@@ -95,14 +61,14 @@ export default function Dashboard() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-medium text-muted-foreground">Your attendance today</p>
-                {today && !today.clock_out_at ? (
+                {mySession && mySession.clockOutAt === undefined ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Clocked in at {fmtTime(today.clock_in_at)}
-                    {today.late_minutes > 0 ? ` · ${today.late_minutes}m late` : " · on time"}
+                    Clocked in at {fmtTime(mySession.clockInAt)}
+                    {mySession.lateMinutes > 0 ? ` · ${mySession.lateMinutes}m late` : " · on time"}
                   </p>
-                ) : today ? (
+                ) : mySession ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Done for today — {((today.worked_minutes ?? 0) / 60).toFixed(1)}h worked
+                    Done for today — {((mySession.workedMinutes ?? 0) / 60).toFixed(1)}h worked
                   </p>
                 ) : (
                   <p className="mt-1 text-lg font-semibold">Not clocked in yet — scan the office QR at the kiosk.</p>
@@ -121,18 +87,23 @@ export default function Dashboard() {
 
           {/* stats */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile icon={Users} label="Total employees" value={dash.counts.total_employees} />
-            <StatTile icon={UserCheck} label="Present today" value={dash.counts.present + dash.counts.half_day} tone="text-emerald-600" />
-            <StatTile icon={Clock3} label="Late today" value={dash.counts.late} tone="text-amber-600" />
-            <StatTile icon={TimerReset} label="Currently in office" value={dash.counts.ongoing} tone="text-sky-600" />
-            <StatTile icon={Plane} label="On leave" value={dash.counts.on_leave} tone="text-violet-600" />
-            <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.counts.absent} tone="text-rose-600" />
-            <StatTile icon={AlertTriangle} label="Missing clock-out (7d)" value={dash.counts.missing_out} tone="text-orange-600" />
+            <StatTile icon={Users} label="Total employees" value={dash.headcount} />
+            <StatTile icon={UserCheck} label="Present today" value={dash.todaySummary.present} tone="text-emerald-600" />
+            <StatTile icon={Clock3} label="Late today" value={dash.todaySummary.late} tone="text-amber-600" />
+            <StatTile icon={TimerReset} label="Currently in office" value={dash.todaySummary.ongoing} tone="text-sky-600" />
+            <StatTile icon={Plane} label="On leave" value={dash.todaySummary.onLeave} tone="text-violet-600" />
+            <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.todaySummary.absent} tone="text-rose-600" />
+            <StatTile
+              icon={Fingerprint}
+              label="People without a device"
+              value={dash.approvals?.peopleWithoutDevice ?? 0}
+              tone="text-orange-600"
+            />
             <StatTile
               icon={Activity}
               label="Pending reviews"
-              value={dash.pendingLeave + dash.pendingCorrections}
-              hint={`${dash.pendingLeave} leave · ${dash.pendingCorrections} corrections`}
+              value={(dash.approvals?.leave ?? 0) + (dash.approvals?.corrections ?? 0)}
+              hint={`${dash.approvals?.leave ?? 0} leave · ${dash.approctions?.corrections ?? 0} corrections`}
             />
           </div>
 
@@ -140,12 +111,12 @@ export default function Dashboard() {
           <div className="mt-6 grid gap-4 lg:grid-cols-3">
             <GlassCard className="p-5 lg:col-span-2">
               <div className="mb-4 flex items-center justify-between">
-                <h3 className="font-semibold">Attendance trend — last 14 days</h3>
+                <h3 className="font-semibold">Attendance trend — last 7 days</h3>
                 <Badge variant="outline" className="glass-soft text-[10px]">live</Badge>
               </div>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={(dash.trend ?? []).map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
+                  <AreaChart data={dash.trend.map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
                     <defs>
                       <linearGradient id="gPresent" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#6366f1" stopOpacity={0.5} />
@@ -171,7 +142,7 @@ export default function Dashboard() {
               <h3 className="mb-4 font-semibold">Departments today</h3>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={(dash.deptRows ?? []).filter(Boolean) as NonNullable<DashboardData["deptRows"][number]>[]} layout="vertical" barSize={14}>
+                  <BarChart data={dash.deptRows} layout="vertical" barSize={14}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" horizontal={false} />
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} fontSize={11} />
@@ -193,60 +164,62 @@ export default function Dashboard() {
                 <h3 className="font-semibold">Recent attendance activity</h3>
               </div>
               <div className="space-y-2">
-                {(dash.recentEvents ?? []).filter(Boolean).length === 0 && (
+                {dash.activity.length === 0 && (
                   <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>
                 )}
-                {(dash.recentEvents ?? []).filter(Boolean).map((ev0) => {
-                  const ev = ev0 as NonNullable<DashboardData["recentEvents"][number]>;
-                  return (
-                    <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        {ev.kind === "clock_out" ? (
-                          <LogOut className="size-3.5 text-rose-500" />
-                        ) : (
-                          <LogIn className="size-3.5 text-emerald-500" />
-                        )}
-                        <div>
-                          <p className="text-sm font-medium">{ev.employee_name}</p>
-                          <p className="text-[11px] text-muted-foreground">
-                            {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
-                          </p>
-                        </div>
-                      </div>
-                      {ev.day_key === todayKey ? (
-                        <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-700">today</Badge>
+                {dash.activity.map((ev) => (
+                  <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
+                    <div className="flex items-center gap-2.5">
+                      {ev.kind === "clock_out" ? (
+                        <LogOut className="size-3.5 text-rose-500" />
                       ) : (
-                        <span className="text-[11px] text-muted-foreground">{ev.day_key}</span>
+                        <LogIn className="size-3.5 text-emerald-500" />
                       )}
+                      <div>
+                        <p className="text-sm font-medium">{ev.name}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
+                        </p>
+                      </div>
                     </div>
-                  );
-                })}
+                    <span className="text-[11px] text-muted-foreground">{ev.employeeCode}</span>
+                  </div>
+                ))}
               </div>
             </GlassCard>
 
             <GlassCard className="p-5">
               <h3 className="mb-3 font-semibold">Needs attention</h3>
               <div className="space-y-2">
-                {dash.pendingLeave > 0 && (
+                {(dash.approvals?.leave ?? 0) > 0 && (
                   <ActionRow icon={Plane} tone="text-sky-600"
-                    title={`${dash.pendingLeave} leave request${dash.pendingLeave > 1 ? "s" : ""} awaiting review`}
+                    title={`${dash.approvals?.leave} leave request${(dash.approvals?.leave ?? 0) > 1 ? "s" : ""} awaiting review`}
                     onClick={() => navigate("/leave-admin")} />
                 )}
-                {dash.pendingCorrections > 0 && (
+                {(dash.approvals?.corrections ?? 0) > 0 && (
                   <ActionRow icon={TimerReset} tone="text-amber-600"
-                    title={`${dash.pendingCorrections} attendance correction${dash.pendingCorrections > 1 ? "s" : ""} to review`}
+                    title={`${dash.approvals?.corrections} attendance correction${(dash.approvals?.corrections ?? 0) > 1 ? "s" : ""} to review`}
                     onClick={() => navigate("/corrections")} />
                 )}
-                {dash.counts.missing_out > 0 && (
-                  <ActionRow icon={AlertTriangle} tone="text-orange-600"
-                    title={`${dash.counts.missing_out} missing clock-out${dash.counts.missing_out > 1 ? "s" : ""} in the last 7 days`}
-                    onClick={() => navigate("/attendance-admin")} />
+                {(dash.approvals?.devices ?? 0) > 0 && (
+                  <ActionRow icon={Fingerprint} tone="text-orange-600"
+                    title={`${dash.approvals?.devices} device replacement${(dash.approvals?.devices ?? 0) > 1 ? "s" : ""} waiting`}
+                    onClick={() => navigate("/devices")} />
                 )}
-                {dash.pendingLeave + dash.pendingCorrections + dash.counts.missing_out === 0 && (
-                  <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
+                {(dash.approvals?.peopleWithoutDevice ?? 0) > 0 && (
+                  <ActionRow icon={AlertTriangle} tone="text-rose-600"
+                    title={`${dash.approvals?.peopleWithoutDevice} ${(dash.approvals?.peopleWithoutDevice ?? 0) === 1 ? "person has" : "people have"} no registered device`}
+                    onClick={() => navigate("/employees")} />
                 )}
+                {dash.approvals &&
+                  dash.approvals.leave === 0 &&
+                  dash.approvals.corrections === 0 &&
+                  dash.approvals.devices === 0 &&
+                  dash.approvals.peopleWithoutDevice === 0 && (
+                    <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
+                  )}
               </div>
-              {hasPerm(dash.myRole, "manage_employees") && (
+              {hasPerm(ws?.employee.role, "manage_employees") && (
                 <div className="mt-4 border-t border-white/40 pt-4">
                   <Button variant="outline" className="glass w-full" onClick={() => navigate("/employees")}>
                     <Building2 className="size-4" /> Manage employees
@@ -281,5 +254,3 @@ function greeting() {
   if (h < 17) return "afternoon";
   return "evening";
 }
-
-void err;
