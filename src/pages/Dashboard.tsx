@@ -1,52 +1,84 @@
-import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/hooks/use-auth";
 import { AppShell, hasPerm } from "@/components/AppShell";
 import { GlassCard, StatTile, PageHeader } from "@/components/glass";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  BarChart,
-  Bar,
+  ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar,
 } from "recharts";
 import {
   Users, UserCheck, Clock3, TimerReset, CalendarOff, Plane,
   Building2, ArrowRight, LogIn, LogOut, AlertTriangle, Activity, ScanLine,
 } from "lucide-react";
 import { useNavigate } from "react-router";
-import { useQuery, useMutation } from "convex/react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { supabase, fmtTime, err, type DashboardData, type Session } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
+import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
 
 const DAY_FMT = (d: string) =>
   new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
 
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-}
+const tooltipStyle = {
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.6)",
+  background: "rgba(255,255,255,0.88)",
+  backdropFilter: "blur(12px)",
+  fontSize: 12,
+} as const;
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user } = useSupabaseAuth();
+  const { ws } = useWorkspace();
   const navigate = useNavigate();
-  const dash = useQuery(api.analytics.dashboard, {});
-  const today = useQuery(api.attendance.myToday, {});
-  const autoSweep = useMutation(api.attendance.autoClockOutSweep);
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [today, setToday] = useState<Session | null>(null);
 
+  // load dashboard data + my session, refresh on realtime inserts
   useEffect(() => {
-    autoSweep({}).catch(() => undefined);
-  }, [autoSweep]);
+    if (!ws) return;
+    const companyId = ws.employee.company_id;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    async function load() {
+      const [{ data }, { data: sessions }] = await Promise.all([
+        supabase.rpc("dashboard_data"),
+        supabase
+          .from("attendance_sessions")
+          .select("*")
+          .eq("employee_id", ws!.employee.id)
+          .eq("day_key", new Date().toISOString().slice(0, 10))
+          .order("clock_in_at", { ascending: false })
+          .limit(1),
+      ]);
+      if (data) setDash(data as unknown as DashboardData);
+      setToday((sessions?.[0] as unknown as Session) ?? null);
+    }
+    load();
+    const sweep = async () => {
+      try { await supabase.rpc("auto_clockout_sweep"); } catch { /* noop */ }
+    };
+    void sweep();
+
+    channel = supabase
+      .channel("of-dashboard")
+      .on("postgres_changes", { event: "*", schema: "public", table: "attendance_sessions", filter: `company_id=eq.${companyId}` }, () => load())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "attendance_events", filter: `company_id=eq.${companyId}` }, () => load())
+      .subscribe();
+
+    const iv = setInterval(load, 60000);
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+      clearInterval(iv);
+    };
+  }, [ws]);
 
   const todayKey = new Date().toISOString().slice(0, 10);
+  const myName = ws?.employee.name ?? user?.email ?? "there";
 
   return (
     <AppShell title="Dashboard">
       <PageHeader
-        title={`Good ${greeting()}, ${firstName(user?.name ?? "there")}`}
+        title={`Good ${greeting()}, ${myName.split(" ")[0]}`}
         subtitle="Here's what's happening across your company today."
       />
 
@@ -63,17 +95,17 @@ export default function Dashboard() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-medium text-muted-foreground">Your attendance today</p>
-                {today && !today.clockOutAt ? (
+                {today && !today.clock_out_at ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Clocked in at {fmtTime(today.clockInAt)}
-                    {today.lateMinutes > 0 ? ` · ${today.lateMinutes}m late` : " · on time"}
+                    Clocked in at {fmtTime(today.clock_in_at)}
+                    {today.late_minutes > 0 ? ` · ${today.late_minutes}m late` : " · on time"}
                   </p>
                 ) : today ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Done for today — {((today.workedMinutes ?? 0) / 60).toFixed(1)}h worked
+                    Done for today — {((today.worked_minutes ?? 0) / 60).toFixed(1)}h worked
                   </p>
                 ) : (
-                  <p className="mt-1 text-lg font-semibold">Not clocked in yet — scan the office QR from the kiosk.</p>
+                  <p className="mt-1 text-lg font-semibold">Not clocked in yet — scan the office QR at the kiosk.</p>
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
@@ -89,13 +121,13 @@ export default function Dashboard() {
 
           {/* stats */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile icon={Users} label="Total employees" value={dash.counts.totalEmployees} />
-            <StatTile icon={UserCheck} label="Present today" value={dash.counts.present + dash.counts.halfDay} tone="text-emerald-600" />
+            <StatTile icon={Users} label="Total employees" value={dash.counts.total_employees} />
+            <StatTile icon={UserCheck} label="Present today" value={dash.counts.present + dash.counts.half_day} tone="text-emerald-600" />
             <StatTile icon={Clock3} label="Late today" value={dash.counts.late} tone="text-amber-600" />
             <StatTile icon={TimerReset} label="Currently in office" value={dash.counts.ongoing} tone="text-sky-600" />
-            <StatTile icon={Plane} label="On leave" value={dash.counts.onLeave} tone="text-violet-600" />
+            <StatTile icon={Plane} label="On leave" value={dash.counts.on_leave} tone="text-violet-600" />
             <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.counts.absent} tone="text-rose-600" />
-            <StatTile icon={AlertTriangle} label="Missing clock-out (7d)" value={dash.counts.missingOut} tone="text-orange-600" />
+            <StatTile icon={AlertTriangle} label="Missing clock-out (7d)" value={dash.counts.missing_out} tone="text-orange-600" />
             <StatTile
               icon={Activity}
               label="Pending reviews"
@@ -113,7 +145,7 @@ export default function Dashboard() {
               </div>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={dash.trend.map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
+                  <AreaChart data={(dash.trend ?? []).map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
                     <defs>
                       <linearGradient id="gPresent" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#6366f1" stopOpacity={0.5} />
@@ -139,7 +171,7 @@ export default function Dashboard() {
               <h3 className="mb-4 font-semibold">Departments today</h3>
               <div className="h-56">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={dash.deptRows} layout="vertical" barSize={14}>
+                  <BarChart data={(dash.deptRows ?? []).filter(Boolean) as NonNullable<DashboardData["deptRows"][number]>[]} layout="vertical" barSize={14}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" horizontal={false} />
                     <XAxis type="number" hide />
                     <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} fontSize={11} />
@@ -161,31 +193,34 @@ export default function Dashboard() {
                 <h3 className="font-semibold">Recent attendance activity</h3>
               </div>
               <div className="space-y-2">
-                {dash.recentEvents.length === 0 && (
+                {(dash.recentEvents ?? []).filter(Boolean).length === 0 && (
                   <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>
                 )}
-                {dash.recentEvents.map((ev) => (
-                  <div key={ev._id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
-                    <div className="flex items-center gap-2.5">
-                      {ev.kind === "clock_out" ? (
-                        <LogOut className="size-3.5 text-rose-500" />
-                      ) : (
-                        <LogIn className="size-3.5 text-emerald-500" />
-                      )}
-                      <div>
-                        <p className="text-sm font-medium">{ev.employeeName}</p>
-                        <p className="text-[11px] text-muted-foreground">
-                          {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
-                        </p>
+                {(dash.recentEvents ?? []).filter(Boolean).map((ev0) => {
+                  const ev = ev0 as NonNullable<DashboardData["recentEvents"][number]>;
+                  return (
+                    <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
+                      <div className="flex items-center gap-2.5">
+                        {ev.kind === "clock_out" ? (
+                          <LogOut className="size-3.5 text-rose-500" />
+                        ) : (
+                          <LogIn className="size-3.5 text-emerald-500" />
+                        )}
+                        <div>
+                          <p className="text-sm font-medium">{ev.employee_name}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
+                          </p>
+                        </div>
                       </div>
+                      {ev.day_key === todayKey ? (
+                        <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-700">today</Badge>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">{ev.day_key}</span>
+                      )}
                     </div>
-                    {ev.dayKey === todayKey ? (
-                      <Badge variant="secondary" className="bg-emerald-500/15 text-emerald-700">today</Badge>
-                    ) : (
-                      <span className="text-[11px] text-muted-foreground">{ev.dayKey}</span>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </GlassCard>
 
@@ -193,30 +228,21 @@ export default function Dashboard() {
               <h3 className="mb-3 font-semibold">Needs attention</h3>
               <div className="space-y-2">
                 {dash.pendingLeave > 0 && (
-                  <ActionRow
-                    icon={Plane}
-                    tone="text-sky-600"
+                  <ActionRow icon={Plane} tone="text-sky-600"
                     title={`${dash.pendingLeave} leave request${dash.pendingLeave > 1 ? "s" : ""} awaiting review`}
-                    onClick={() => navigate("/leave-admin")}
-                  />
+                    onClick={() => navigate("/leave-admin")} />
                 )}
                 {dash.pendingCorrections > 0 && (
-                  <ActionRow
-                    icon={TimerReset}
-                    tone="text-amber-600"
+                  <ActionRow icon={TimerReset} tone="text-amber-600"
                     title={`${dash.pendingCorrections} attendance correction${dash.pendingCorrections > 1 ? "s" : ""} to review`}
-                    onClick={() => navigate("/corrections")}
-                  />
+                    onClick={() => navigate("/corrections")} />
                 )}
-                {dash.counts.missingOut > 0 && (
-                  <ActionRow
-                    icon={AlertTriangle}
-                    tone="text-orange-600"
-                    title={`${dash.counts.missingOut} missing clock-out${dash.counts.missingOut > 1 ? "s" : ""} in the last 7 days`}
-                    onClick={() => navigate("/attendance-admin")}
-                  />
+                {dash.counts.missing_out > 0 && (
+                  <ActionRow icon={AlertTriangle} tone="text-orange-600"
+                    title={`${dash.counts.missing_out} missing clock-out${dash.counts.missing_out > 1 ? "s" : ""} in the last 7 days`}
+                    onClick={() => navigate("/attendance-admin")} />
                 )}
-                {dash.pendingLeave + dash.pendingCorrections + dash.counts.missingOut === 0 && (
+                {dash.pendingLeave + dash.pendingCorrections + dash.counts.missing_out === 0 && (
                   <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
                 )}
               </div>
@@ -235,30 +261,13 @@ export default function Dashboard() {
   );
 }
 
-const tooltipStyle = {
-  borderRadius: 12,
-  border: "1px solid rgba(255,255,255,0.6)",
-  background: "rgba(255,255,255,0.88)",
-  backdropFilter: "blur(12px)",
-  fontSize: 12,
-} as const;
-
-function ActionRow({
-  icon: Icon,
-  tone,
-  title,
-  onClick,
-}: {
+function ActionRow({ icon: Icon, tone, title, onClick }: {
   icon: React.ComponentType<{ className?: string }>;
-  tone: string;
-  title: string;
-  onClick: () => void;
+  tone: string; title: string; onClick: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className="glass-soft flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-colors hover:bg-white/60"
-    >
+    <button onClick={onClick}
+      className="glass-soft flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-left transition-colors hover:bg-white/60">
       <Icon className={`size-4.5 ${tone}`} />
       <span className="flex-1 text-sm">{title}</span>
       <ArrowRight className="size-4 text-muted-foreground" />
@@ -273,6 +282,4 @@ function greeting() {
   return "evening";
 }
 
-function firstName(name: string | undefined) {
-  return (name ?? "").split(" ")[0] || "there";
-}
+void err;

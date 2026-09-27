@@ -1,4 +1,3 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty } from "@/components/glass";
 import { Badge } from "@/components/ui/badge";
@@ -6,13 +5,15 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { useQuery } from "convex/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Radio, Search, RefreshCw } from "lucide-react";
+import { supabase, fmtTime } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-}
+type Row = {
+  employee: { id: string; name: string; employee_code: string; position: string | null };
+  session: { clock_in_at: string; clock_out_at: string | null; status: string } | null;
+};
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   present: { label: "Present", cls: "bg-emerald-500/15 text-emerald-700" },
@@ -26,27 +27,58 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 };
 
 export default function LiveAttendance() {
-  const live = useQuery(api.attendance.liveAttendance, {});
+  const { ws } = useWorkspace();
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
 
-  const rows = useMemo(() => {
-    if (!live) return [];
-    let r = live;
-    if (q.trim()) {
-      const needle = q.toLowerCase();
-      r = r.filter(
-        (x) =>
-          x.employee.name.toLowerCase().includes(needle) ||
-          x.employee.employeeCode.toLowerCase().includes(needle),
+  useEffect(() => {
+    if (!ws) return;
+    const companyId = ws.employee.company_id;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    async function load() {
+      const [{ data: emps }, { data: sessions }] = await Promise.all([
+        supabase.from("employees").select("id, name, employee_code, position")
+          .eq("company_id", companyId).eq("active", true).order("name"),
+        supabase.from("attendance_sessions").select("employee_id, clock_in_at, clock_out_at, status")
+          .eq("company_id", companyId)
+          .eq("day_key", new Date().toISOString().slice(0, 10)),
+      ]);
+      const sMap = new Map(((sessions ?? []) as Array<{ employee_id: string; clock_in_at: string; clock_out_at: string | null; status: string }>).map((s) => [s.employee_id, s]));
+      setRows(
+        ((emps ?? []) as Row["employee"][]).map((e) => ({
+          employee: e,
+          session: sMap.get(e.id) ?? null,
+        })),
       );
+      setLoading(false);
     }
-    if (filter === "in") r = r.filter((x) => x.session && !x.session.clockOutAt && x.session.status !== "on_leave");
-    if (filter === "out") r = r.filter((x) => x.session?.clockOutAt);
+    load();
+
+    channel = supabase
+      .channel("of-live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "attendance_sessions", filter: `company_id=eq.${companyId}` }, () => load())
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [ws]);
+
+  const shown = useMemo(() => {
+    let r = rows;
+    if (q.trim()) {
+      const n = q.toLowerCase();
+      r = r.filter((x) => x.employee.name.toLowerCase().includes(n) || x.employee.employee_code.toLowerCase().includes(n));
+    }
+    if (filter === "in") r = r.filter((x) => x.session && !x.session.clock_out_at && x.session.status !== "on_leave");
+    if (filter === "out") r = r.filter((x) => x.session?.clock_out_at);
     if (filter === "none") r = r.filter((x) => !x.session || x.session.status === "on_leave");
     if (filter === "late") r = r.filter((x) => x.session?.status === "late");
     return r;
-  }, [live, q, filter]);
+  }, [rows, q, filter]);
 
   return (
     <AppShell title="Live attendance">
@@ -81,24 +113,24 @@ export default function LiveAttendance() {
         </Select>
       </GlassCard>
 
-      {!live ? (
+      {loading ? (
         <GlassCard className="p-10 text-center text-sm text-muted-foreground">
           <RefreshCw className="mx-auto mb-2 size-5 animate-spin" /> Loading…
         </GlassCard>
-      ) : rows.length === 0 ? (
+      ) : shown.length === 0 ? (
         <GlassCard className="p-5"><Empty icon={Radio} text="No employees match this filter." /></GlassCard>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {rows.map(({ employee, session }) => {
+          {shown.map(({ employee, session }) => {
             const meta = session ? STATUS_META[session.status] : STATUS_META.absent;
-            const ongoing = session && !session.clockOutAt && session.status !== "on_leave";
+            const ongoing = session && !session.clock_out_at && session.status !== "on_leave";
             return (
-              <GlassCard key={employee._id} className="p-4">
+              <GlassCard key={employee.id} className="p-4">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{employee.name}</p>
                     <p className="text-[11px] text-muted-foreground">
-                      {employee.employeeCode}{employee.position ? ` · ${employee.position}` : ""}
+                      {employee.employee_code}{employee.position ? ` · ${employee.position}` : ""}
                     </p>
                   </div>
                   <Badge variant="secondary" className={meta?.cls ?? ""}>{meta?.label ?? session?.status}</Badge>
@@ -106,11 +138,11 @@ export default function LiveAttendance() {
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                   <div className="glass-soft rounded-lg px-2.5 py-1.5">
                     <span className="text-muted-foreground">In:</span>{" "}
-                    <span className="font-semibold tabular-nums">{session ? fmtTime(session.clockInAt) : "—"}</span>
+                    <span className="font-semibold tabular-nums">{session ? fmtTime(session.clock_in_at) : "—"}</span>
                   </div>
                   <div className="glass-soft rounded-lg px-2.5 py-1.5">
                     <span className="text-muted-foreground">Out:</span>{" "}
-                    <span className="font-semibold tabular-nums">{session?.clockOutAt ? fmtTime(session.clockOutAt) : ongoing ? "…" : "—"}</span>
+                    <span className="font-semibold tabular-nums">{session?.clock_out_at ? fmtTime(session.clock_out_at) : ongoing ? "…" : "—"}</span>
                   </div>
                 </div>
               </GlassCard>

@@ -1,14 +1,14 @@
-import { api } from "@/convex/_generated/api";
-import { useQuery, useMutation } from "convex/react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { GlassCard } from "@/components/glass";
 import { ScanLine, ChevronLeft, RefreshCw } from "lucide-react";
+import { supabase, err } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 /** Deterministic visual matrix rendered from the current token.
- *  In this browser demo the "scan" action submits the current token's raw
- *  value directly (paste flow) — validation always happens on the server. */
+ *  The "scan" happens by submitting the current token's raw value —
+ *  validation always happens on the server (scan_qr RPC). */
 function TokenMatrix({ value, size = 232 }: { value: string; size?: number }) {
   const cells = 25;
   let h = 2166136261;
@@ -19,11 +19,9 @@ function TokenMatrix({ value, size = 232 }: { value: string; size?: number }) {
   let x = h >>> 0;
   const bits: boolean[] = [];
   for (let i = 0; i < cells * cells; i++) {
-    x ^= x << 13;
-    x >>>= 0;
+    x ^= x << 13; x >>>= 0;
     x ^= x >> 17;
-    x ^= x << 5;
-    x >>>= 0;
+    x ^= x << 5; x >>>= 0;
     bits.push((x & 1) === 1);
   }
   const dim = size / cells;
@@ -31,22 +29,13 @@ function TokenMatrix({ value, size = 232 }: { value: string; size?: number }) {
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="rounded-xl bg-white p-1.5 shadow-inner">
       {bits.map((on, i) =>
         on ? (
-          <rect
-            key={i}
+          <rect key={i}
             x={(i % cells) * dim + 1.5}
             y={Math.floor(i / cells) * dim + 1.5}
-            width={dim - 1}
-            height={dim - 1}
-            fill="#111827"
-            rx={1.5}
-          />
+            width={dim - 1} height={dim - 1} fill="#111827" rx={1.5} />
         ) : null,
       )}
-      {[
-        [0, 0],
-        [cells - 7, 0],
-        [0, cells - 7],
-      ].map(([fx, fy], idx) => (
+      {[[0, 0], [cells - 7, 0], [0, cells - 7]].map(([fx, fy], idx) => (
         <g key={idx}>
           <rect x={fx * dim + 1.5} y={fy * dim + 1.5} width={dim * 7 - 1} height={dim * 7 - 1} fill="#111827" rx={4} />
           <rect x={(fx + 1) * dim + 1.5} y={(fy + 1) * dim + 1.5} width={dim * 5 - 1} height={dim * 5 - 1} fill="#fff" rx={3} />
@@ -58,19 +47,31 @@ function TokenMatrix({ value, size = 232 }: { value: string; size?: number }) {
 }
 
 export default function Kiosk() {
-  const ws = useQuery(api.workspace.get);
-  const displays = useQuery(api.qrDisplays.list, {});
-  const issueToken = useMutation(api.attendance.issueQrToken);
-  const [displayId, setDisplayId] = useState<string | null>(null);  const [qr, setQr] = useState<{ raw: string; expiresAt: number } | null>(null);
+  const { ws } = useWorkspace();
+  const [displayId, setDisplayId] = useState<string | null>(null);
+  const [displayLabel, setDisplayLabel] = useState("Kiosk");
+  const [qr, setQr] = useState<{ raw: string; expiresAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
 
   // pick the first active display
   useEffect(() => {
-    if (!displays || displayId) return;
-    const firstActive = displays.find((d) => d.active);
-    if (firstActive) setDisplayId(firstActive._id);
-  }, [displays, displayId]);
+    if (!ws || displayId) return;
+    (async () => {
+      const { data } = await supabase
+        .from("qr_displays")
+        .select("id, label")
+        .eq("company_id", ws.employee.company_id)
+        .eq("active", true)
+        .order("created_at", { ascending: true })
+        .limit(1);
+      const d = (data as Array<{ id: string; label: string }> | null)?.[0];
+      if (d) {
+        setDisplayId(d.id);
+        setDisplayLabel(d.label);
+      }
+    })();
+  }, [ws, displayId]);
 
   // mint tokens on a rotation cycle
   useEffect(() => {
@@ -79,13 +80,15 @@ export default function Kiosk() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const mint = async () => {
       try {
-        const res = await issueToken({ displayId: displayId as any });
-        if (!cancelled) {
-          setQr({ raw: res.raw, expiresAt: res.expiresAt });
+        const { data, error } = await supabase.rpc("issue_qr_token", { p_display: displayId });
+        if (error) throw error;
+        const v = data as { raw: string; expiresAt: number };
+        if (!cancelled && v) {
+          setQr({ raw: v.raw, expiresAt: Number(v.expiresAt) });
           setError(null);
         }
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to refresh QR");
+        if (!cancelled) setError(err(e));
       }
       if (!cancelled) timer = setTimeout(mint, 28500);
     };
@@ -94,9 +97,8 @@ export default function Kiosk() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [displayId, issueToken]);
+  }, [displayId]);
 
-  // clock tick
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
@@ -112,7 +114,7 @@ export default function Kiosk() {
     );
   }
 
-  const ttl = ws.settings.qrRotationSeconds;
+  const ttl = ws.settings?.qr_rotation_seconds ?? 30;
   const remaining = qr ? Math.max(0, Math.ceil((qr.expiresAt - now) / 1000)) : 0;
   const pct = qr ? Math.max(0, Math.min(1, remaining / ttl)) : 0;
 
@@ -125,9 +127,7 @@ export default function Kiosk() {
 
       <div className="absolute left-6 top-6">
         <Button asChild variant="outline" className="glass">
-          <Link to="/dashboard">
-            <ChevronLeft className="size-4" /> Back to app
-          </Link>
+          <Link to="/dashboard"><ChevronLeft className="size-4" /> Back to app</Link>
         </Button>
       </div>
 
@@ -135,9 +135,7 @@ export default function Kiosk() {
         <div className="mb-1 flex items-center justify-center gap-2 text-sm font-semibold text-primary">
           <ScanLine className="size-4" /> {ws.company?.name ?? "OfficeFlow"}
         </div>
-        <p className="mb-6 text-xs text-muted-foreground">
-          {displays?.find((d) => d._id === displayId)?.label ?? "Kiosk"}
-        </p>
+        <p className="mb-6 text-xs text-muted-foreground">{displayLabel}</p>
 
         <div className="glass-inset relative mx-auto flex size-64 items-center justify-center rounded-3xl">
           {qr ? (
@@ -147,18 +145,11 @@ export default function Kiosk() {
           )}
           <svg className="pointer-events-none absolute inset-0 -rotate-90" width="256" height="256">
             <circle cx="128" cy="128" r="124" stroke="rgba(99,102,241,0.15)" strokeWidth="5" fill="none" />
-            <circle
-              cx="128"
-              cy="128"
-              r="124"
-              stroke="#6366f1"
-              strokeWidth="5"
-              fill="none"
+            <circle cx="128" cy="128" r="124" stroke="#6366f1" strokeWidth="5" fill="none"
               strokeDasharray={2 * Math.PI * 124}
               strokeDashoffset={2 * Math.PI * 124 * (1 - pct)}
               strokeLinecap="round"
-              className="transition-[stroke-dashoffset] duration-200"
-            />
+              className="transition-[stroke-dashoffset] duration-200" />
           </svg>
         </div>
 

@@ -1,25 +1,17 @@
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
+  Card, CardContent, CardDescription, CardFooter,
+  CardHeader, CardTitle,
 } from "@/components/ui/card";
-import { useAuth } from "@/hooks/use-auth";
+import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
 import { Loader2, Lock } from "lucide-react";
 import type { ReactNode } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router";
 
 /**
- * Wraps a route that requires a signed-in user.
- *
- * Signed-out visitors used to be bounced straight to `/auth`, which left them
- * on a bare sign-in form with no idea which page they had asked for or why they
- * were moved. The block is now stated on the page they landed on, and sign-in
- * still returns them to it via `returnTo`. Pass `redirectImmediately` for a
- * route where the bounce really is the better experience.
+ * Wraps a route that requires a signed-in user (Supabase session).
+ * Signed-out visitors get an explanatory screen with a sign-in button;
+ * pass `redirectImmediately` to bounce straight to /auth with returnTo.
  */
 export function RequireAuth({
   children,
@@ -28,26 +20,23 @@ export function RequireAuth({
   redirectImmediately = false,
 }: {
   children: ReactNode;
-  /** Headline on the blocked screen. */
   title?: string;
-  /** Says what the visitor gets by signing in. */
   description?: string;
-  /** Skip the explanation and go straight to `/auth`. */
   redirectImmediately?: boolean;
 }) {
-  const { isLoading, isAuthenticated } = useAuth();
+  const { session, loading } = useSupabaseAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
-  if (isLoading) {
+  if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background">
+      <main className="flex min-h-screen items-center justify-center">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </main>
     );
   }
 
-  if (!isAuthenticated) {
+  if (!session) {
     const returnTo = `${location.pathname}${location.search}`;
     const signInHref = `/auth?returnTo=${encodeURIComponent(returnTo)}`;
 
@@ -56,7 +45,7 @@ export function RequireAuth({
     }
 
     return (
-      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+      <main className="flex min-h-screen items-center justify-center p-6">
         <Card className="w-full max-w-md">
           <CardHeader className="text-center">
             <div className="flex justify-center">
@@ -74,11 +63,7 @@ export function RequireAuth({
             <Button className="w-full" onClick={() => navigate(signInHref)}>
               Sign in
             </Button>
-            <Button
-              variant="ghost"
-              className="w-full"
-              onClick={() => navigate("/")}
-            >
+            <Button variant="ghost" className="w-full" onClick={() => navigate("/")}>
               Back to home
             </Button>
           </CardFooter>

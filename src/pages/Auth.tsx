@@ -7,8 +7,7 @@ import { Input } from "@/components/ui/input";
 import {
   InputOTP, InputOTPGroup, InputOTPSlot,
 } from "@/components/ui/input-otp";
-
-import { useAuth } from "@/hooks/use-auth";
+import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
 import { ArrowRight, Loader2, Mail, UserX, ScanLine, Sparkles } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
@@ -25,7 +24,7 @@ function resolveRedirectAfterAuth(returnTo: string | null, fallback = "/dashboar
 }
 
 function Auth({ redirectAfterAuth }: AuthProps = {}) {
-  const { isLoading: authLoading, isAuthenticated, signIn } = useAuth();
+  const { session, sendOtp, verifyOtp, signInAsGuest } = useSupabaseAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = resolveRedirectAfterAuth(
@@ -38,41 +37,32 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated) {
-      navigate(redirect);
-    }
-  }, [authLoading, isAuthenticated, navigate, redirect]);
+    if (session) navigate(redirect);
+  }, [session, navigate, redirect]);
 
   const handleEmailSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsLoading(true);
     setError(null);
     try {
-      const formData = new FormData(event.currentTarget);
-      await signIn("email-otp", formData);
-      setStep({ email: formData.get("email") as string });
+      const email = (new FormData(event.currentTarget).get("email") as string).trim();
+      await sendOtp(email);
+      setStep({ email });
       setIsLoading(false);
-    } catch (error) {
-      console.error("Email sign-in error:", error);
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Failed to send verification code. Please try again.",
-      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to send code");
       setIsLoading(false);
     }
   };
 
-  const handleOtpSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleOtpSubmit = async () => {
+    if (step === "signIn" || otp.length !== 6) return;
     setIsLoading(true);
     setError(null);
     try {
-      const formData = new FormData(event.currentTarget);
-      await signIn("email-otp", formData);
+      await verifyOtp(step.email, otp);
       navigate(redirect);
-    } catch (error) {
-      console.error("OTP verification error:", error);
+    } catch {
       setError("The verification code you entered is incorrect.");
       setIsLoading(false);
       setOtp("");
@@ -83,11 +73,10 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     setIsLoading(true);
     setError(null);
     try {
-      await signIn("anonymous");
+      await signInAsGuest();
       navigate(redirect);
-    } catch (error) {
-      console.error("Guest login error:", error);
-      setError(`Failed to sign in as guest: ${error instanceof Error ? error.message : "Unknown error"}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Guest sign-in failed. It may be disabled in your Supabase project — enable Anonymous sign-ins in Auth settings, or use email sign-in.");
       setIsLoading(false);
     }
   };
@@ -129,23 +118,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                         required
                       />
                     </div>
-                    <Button
-                      type="submit"
-                      variant="outline"
-                      size="icon"
-                      className="glass"
-                      disabled={isLoading}
-                    >
-                      {isLoading ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <ArrowRight className="h-4 w-4" />
-                      )}
+                    <Button type="submit" variant="outline" size="icon" className="glass" disabled={isLoading}>
+                      {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                     </Button>
                   </div>
-                  {error && (
-                    <p className="mt-2 text-sm text-red-500">{error}</p>
-                  )}
+                  {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
 
                   <div className="mt-4">
                     <div className="relative">
@@ -153,18 +130,13 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                         <span className="w-full border-t border-white/50" />
                       </div>
                       <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-transparent px-2 text-muted-foreground backdrop-blur-sm">
-                          Or
-                        </span>
+                        <span className="bg-transparent px-2 text-muted-foreground backdrop-blur-sm">Or</span>
                       </div>
                     </div>
 
                     <Button
-                      type="button"
-                      variant="outline"
-                      className="glass mt-4 w-full"
-                      onClick={handleGuestLogin}
-                      disabled={isLoading}
+                      type="button" variant="outline" className="glass mt-4 w-full"
+                      onClick={handleGuestLogin} disabled={isLoading}
                     >
                       <UserX className="mr-2 h-4 w-4" />
                       Continue as Guest
@@ -181,95 +153,43 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
             <>
               <CardHeader className="mt-4 text-center">
                 <CardTitle>Check your email</CardTitle>
-                <CardDescription>
-                  We've sent a code to {step.email}
-                </CardDescription>
+                <CardDescription>We've sent a 6-digit code to {step.email}</CardDescription>
               </CardHeader>
-              <form onSubmit={handleOtpSubmit}>
-                <CardContent className="pb-4">
-                  <input type="hidden" name="email" value={step.email} />
-                  <input type="hidden" name="code" value={otp} />
-
-                  <div className="flex justify-center">
-                    <InputOTP
-                      value={otp}
-                      onChange={setOtp}
-                      maxLength={6}
-                      disabled={isLoading}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && otp.length === 6 && !isLoading) {
-                          const form = (e.target as HTMLElement).closest("form");
-                          if (form) {
-                            form.requestSubmit();
-                          }
-                        }
-                      }}
-                    >
-                      <InputOTPGroup>
-                        {Array.from({ length: 6 }).map((_, index) => (
-                          <InputOTPSlot key={index} index={index} />
-                        ))}
-                      </InputOTPGroup>
-                    </InputOTP>
-                  </div>
-                  {error && (
-                    <p className="mt-2 text-center text-sm text-red-500">
-                      {error}
-                    </p>
+              <CardContent className="pb-4">
+                <div className="flex justify-center">
+                  <InputOTP value={otp} onChange={setOtp} maxLength={6} disabled={isLoading}>
+                    <InputOTPGroup>
+                      {Array.from({ length: 6 }).map((_, index) => (
+                        <InputOTPSlot key={index} index={index} />
+                      ))}
+                    </InputOTPGroup>
+                  </InputOTP>
+                </div>
+                {error && <p className="mt-2 text-center text-sm text-red-500">{error}</p>}
+                <p className="mt-4 text-center text-sm text-muted-foreground">
+                  Didn't receive a code?{" "}
+                  <Button variant="link" className="h-auto p-0" onClick={() => setStep("signIn")}>
+                    Try again
+                  </Button>
+                </p>
+              </CardContent>
+              <CardFooter className="flex-col gap-2">
+                <Button className="w-full" disabled={isLoading || otp.length !== 6} onClick={handleOtpSubmit}>
+                  {isLoading ? (
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...</>
+                  ) : (
+                    <>Verify code <ArrowRight className="ml-2 h-4 w-4" /></>
                   )}
-                  <p className="mt-4 text-center text-sm text-muted-foreground">
-                    Didn't receive a code?{" "}
-                    <Button
-                      variant="link"
-                      className="h-auto p-0"
-                      onClick={() => setStep("signIn")}
-                    >
-                      Try again
-                    </Button>
-                  </p>
-                </CardContent>
-                <CardFooter className="flex-col gap-2">
-                  <Button
-                    type="submit"
-                    className="w-full"
-                    disabled={isLoading || otp.length !== 6}
-                  >
-                    {isLoading ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Verifying...
-                      </>
-                    ) : (
-                      <>
-                        Verify code
-                        <ArrowRight className="ml-2 h-4 w-4" />
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={() => setStep("signIn")}
-                    disabled={isLoading}
-                    className="w-full"
-                  >
-                    Use different email
-                  </Button>
-                </CardFooter>
-              </form>
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setStep("signIn")} disabled={isLoading} className="w-full">
+                  Use different email
+                </Button>
+              </CardFooter>
             </>
           )}
 
           <div className="rounded-b-3xl border-t border-white/50 bg-white/30 px-6 py-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
-            Secured by{" "}
-            <a
-              href="https://freebuff.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline transition-colors hover:text-primary"
-            >
-              freebuff.com
-            </a>
+            Secured by Supabase Auth
           </div>
         </Card>
       </div>

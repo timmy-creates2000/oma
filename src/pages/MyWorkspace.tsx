@@ -1,5 +1,3 @@
-import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/hooks/use-auth";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty, StatTile } from "@/components/glass";
 import { Button } from "@/components/ui/button";
@@ -14,25 +12,15 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import {
-  Tabs, TabsContent, TabsList, TabsTrigger,
-} from "@/components/ui/tabs";
-import { useQuery, useMutation } from "convex/react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
-  Fingerprint, Plus, ShieldCheck, ShieldX, History, Plane,
-  TimerReset, Smartphone, Loader2, ScanLine, Copy, Check, CalendarDays,
+  Fingerprint, Plus, ShieldCheck, History, Plane, TimerReset,
+  Smartphone, Loader2, ScanLine, Copy, Check, CalendarDays,
 } from "lucide-react";
-
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-function fmtDay(dk: string) {
-  return new Date(`${dk}T00:00:00Z`).toLocaleDateString("en-US", {
-    weekday: "short", month: "short", day: "numeric", timeZone: "UTC",
-  });
-}
+import { supabase, fmtTime, fmtDay, err } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   present: { label: "Present", cls: "bg-emerald-500/15 text-emerald-700" },
@@ -51,52 +39,98 @@ const DEVICE_STATUS_META: Record<string, { label: string; cls: string }> = {
   revoked: { label: "Revoked", cls: "bg-rose-500/15 text-rose-700" },
 };
 
-export default function MyWorkspace() {
-  const ws = useQuery(api.workspace.get);
-  const today = useQuery(api.attendance.myToday, {});
-  const history = useQuery(api.attendance.myHistory, { limit: 60 });
-  const myDevices = useQuery(api.devices.myDevices, {});
-  const balances = useQuery(api.leave.myBalances, {});
-  const myLeave = useQuery(api.leave.myRequests, {});
-  const myCorrections = useQuery(api.attendance.myCorrections, {});
-  const registerDevice = useMutation(api.devices.register);
-  const requestReplacement = useMutation(api.devices.requestReplacement);
-  const requestLeave = useMutation(api.leave.request);
-  const requestCorrection = useMutation(api.attendance.requestCorrection);
+type BalanceRow = { id: string; leave_type_id: string; used_days: number; leave_types: { name: string; annual_quota_days: number } | null };
+type LeaveRow = { id: string; leave_type_id: string; start_date: string; end_date: string; reason: string; status: string; leave_types: { name: string } | null };
+type CorrectionRow = { id: string; session_date: string; reason: string; status: string; reviewer_note: string | null };
+type DeviceRow = { id: string; label: string; platform: string; status: string; public_key_fingerprint: string; registered_at: string };
 
-  // ---- scan flow: employee submits the current kiosk token ----
-  const activeDisplays = useQuery(api.qrDisplays.list, {});
-  const currentToken = useQuery(api.attendance.currentTokenForScanning, {});
-  const scan = useMutation(api.attendance.scanQr);
+export default function MyWorkspace() {
+  const { ws } = useWorkspace();
+  const [today, setToday] = useState<Session0 | null>(null);
+  const [history, setHistory] = useState<Session0[]>([]);
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [balances, setBalances] = useState<BalanceRow[]>([]);
+  const [myLeave, setMyLeave] = useState<LeaveRow[]>([]);
+  const [myCorrections, setMyCorrections] = useState<CorrectionRow[]>([]);
+  const [leaveTypes, setLeaveTypes] = useState<Array<{ id: string; name: string; annual_quota_days: number }>>([]);
+  const [token, setToken] = useState<{ raw: string; expiresAt: number } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const activeDevice = (myDevices ?? []).find((d) => d.status === "active");
-  const openSession = today && !today.clockOutAt && today.status !== "on_leave";
-  const canScan = !!activeDevice && !!currentToken;
+  const load = async () => {
+    if (!ws) return;
+    const me = ws.employee.id;
+    const dk = new Date().toISOString().slice(0, 10);
+    const [s, h, d, b, l, c, lt] = await Promise.all([
+      supabase.from("attendance_sessions").select("*").eq("employee_id", me).eq("day_key", dk).maybeSingle(),
+      supabase.from("attendance_sessions").select("*").eq("employee_id", me).order("clock_in_at", { ascending: false }).limit(60),
+      supabase.from("registered_devices").select("*").eq("employee_id", me).order("registered_at", { ascending: false }),
+      supabase.from("leave_balances").select("*, leave_types(name, annual_quota_days)").eq("employee_id", me).eq("year", new Date().getFullYear()),
+      supabase.from("leave_requests").select("*, leave_types(name)").eq("employee_id", me).order("created_at", { ascending: false }),
+      supabase.from("correction_requests").select("*").eq("employee_id", me).order("created_at", { ascending: false }),
+      supabase.from("leave_types").select("id, name, annual_quota_days").eq("company_id", ws.employee.company_id),
+    ]);
+    setToday((s.data ?? null) as Session0 | null);
+    setHistory((h.data ?? []) as Session0[]);
+    setDevices((d.data ?? []) as DeviceRow[]);
+    setBalances((b.data ?? []) as BalanceRow[]);
+    setMyLeave((l.data ?? []) as LeaveRow[]);
+    setMyCorrections((c.data ?? []) as CorrectionRow[]);
+    setLeaveTypes((lt.data ?? []) as Array<{ id: string; name: string; annual_quota_days: number }>);
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws]);
+
+  // live demo token from any active kiosk in the company
+  useEffect(() => {
+    if (!ws) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function pull() {
+      const { data: displays } = await supabase
+        .from("qr_displays").select("id").eq("company_id", ws!.employee.company_id).eq("active", true).limit(1);
+      const disp = (displays as Array<{ id: string }> | null)?.[0];
+      if (disp) {
+        const { data } = await supabase.rpc("issue_qr_token", { p_display: disp.id });
+        const v = data as { raw: string; expiresAt: number } | null;
+        if (!stop && v) setToken({ raw: (v as any).raw, expiresAt: Number((v as any).expiresAt) });
+      }
+      if (!stop) timer = setTimeout(pull, 25000);
+    }
+    pull();
+    return () => { stop = true; if (timer) clearTimeout(timer); };
+  }, [ws]);
+
+  const activeDevice = devices.find((d) => d.status === "active");
+  const openSession = today && !today.clock_out_at && today.status !== "on_leave";
+  const canScan = !!activeDevice && !!token;
 
   const handleScan = async () => {
-    if (!currentToken || !activeDevice) return;
+    if (!token || !activeDevice) return;
     setScanning(true);
     try {
-      const res = await scan({
-        rawToken: currentToken.raw,
-        deviceId: activeDevice._id,
+      const { data, error } = await supabase.rpc("scan_qr", {
+        p_raw: token.raw,
+        p_device: activeDevice.id,
       });
-      toast.success(res.message, {
-        description: res.action === "clock_in" ? "Clock-in recorded" : "Clock-out recorded",
-      });
+      if (error) throw error;
+      const res = data as { message: string; action: string };
+      toast.success(res.message, { description: res.action === "clock_in" ? "Clock-in recorded" : "Clock-out recorded" });
+      await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Scan failed");
+      toast.error(err(e));
     } finally {
       setScanning(false);
     }
   };
 
   const copyToken = async () => {
-    if (!currentToken) return;
+    if (!token) return;
     try {
-      await navigator.clipboard.writeText(currentToken.raw);
+      await navigator.clipboard.writeText(token.raw);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -104,70 +138,66 @@ export default function MyWorkspace() {
     }
   };
 
-  // ---- device registration ----
+  // device registration
   const [regOpen, setRegOpen] = useState(false);
   const [devLabel, setDevLabel] = useState("");
   const [devPlatform, setDevPlatform] = useState("iOS");
-
   const handleRegisterDevice = async () => {
     try {
-      await registerDevice({
-        label: devLabel || "My device",
-        platform: devPlatform,
-        publicKeyMock: `${ws?.employee.email}:${devLabel}:${Date.now()}`,
-      });
+      const { error } = await supabase.rpc("register_device", { p_label: devLabel || "My device", p_platform: devPlatform });
+      if (error) throw error;
       toast.success("Device registered", { description: "You can now scan to clock in/out." });
       setRegOpen(false);
       setDevLabel("");
+      load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Registration failed");
+      toast.error(err(e));
     }
   };
 
-  // ---- leave request ----
+  // leave request
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [leaveType, setLeaveType] = useState("");
   const [leaveStart, setLeaveStart] = useState("");
   const [leaveEnd, setLeaveEnd] = useState("");
   const [leaveReason, setLeaveReason] = useState("");
-
   const handleRequestLeave = async () => {
     try {
-      await requestLeave({
-        leaveTypeId: leaveType as any,
-        startDate: leaveStart,
-        endDate: leaveEnd,
-        reason: leaveReason,
+      const { error } = await supabase.rpc("request_leave", {
+        p_type: leaveType, p_start: leaveStart, p_end: leaveEnd, p_reason: leaveReason,
       });
+      if (error) throw error;
       toast.success("Leave request submitted");
       setLeaveOpen(false);
       setLeaveReason("");
+      load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Request failed");
+      toast.error(err(e));
     }
   };
 
-  // ---- correction request ----
+  // correction request
   const [corrOpen, setCorrOpen] = useState(false);
   const [corrDate, setCorrDate] = useState("");
   const [corrIn, setCorrIn] = useState("");
   const [corrOut, setCorrOut] = useState("");
   const [corrReason, setCorrReason] = useState("");
-
   const handleRequestCorrection = async () => {
     try {
-      const toTs = (d: string, t: string) => (d && t ? new Date(`${d}T${t}:00Z`).getTime() : undefined);
-      await requestCorrection({
-        sessionDate: corrDate,
-        requestedClockInAt: toTs(corrDate, corrIn),
-        requestedClockOutAt: corrOut ? toTs(corrDate, corrOut) : undefined,
-        reason: corrReason,
+      const toTs = (d: string, t: string) => (d && t ? new Date(`${d}T${t}:00Z`).toISOString() : null);
+      const { error } = await supabase.rpc("request_correction", {
+        p_date: corrDate,
+        p_in: toTs(corrDate, corrIn),
+        p_out: corrOut ? toTs(corrDate, corrOut) : null,
+        p_reason: corrReason,
       });
+      if (error) throw error;
       toast.success("Correction request submitted");
       setCorrOpen(false);
       setCorrReason("");
+      load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Request failed");
+      toast.error(err(e));
     }
   };
 
@@ -183,7 +213,7 @@ export default function MyWorkspace() {
     <AppShell title="My workspace">
       <PageHeader
         title="My workspace"
-        subtitle={`${ws.employee.name} · ${ws.employee.employeeCode}${ws.employee.position ? ` · ${ws.employee.position}` : ""}`}
+        subtitle={`${ws.employee.name} · ${ws.employee.employee_code}${ws.employee.position ? ` · ${ws.employee.position}` : ""}`}
       />
 
       {/* clock card */}
@@ -196,53 +226,38 @@ export default function MyWorkspace() {
             <div>
               <p className="text-xs font-medium text-muted-foreground">Attendance status</p>
               {openSession ? (
-                <p className="text-xl font-bold">
-                  Working since {fmtTime(today!.clockInAt)}
-                </p>
+                <p className="text-xl font-bold">Working since {fmtTime(today!.clock_in_at)}</p>
               ) : today ? (
-                <p className="text-xl font-bold">
-                  Clocked out at {today.clockOutAt ? fmtTime(today.clockOutAt) : "—"}
-                </p>
+                <p className="text-xl font-bold">Clocked out at {fmtTime(today.clock_out_at)}</p>
               ) : (
                 <p className="text-xl font-bold">Ready to clock in</p>
               )}
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {activeDevice
-                  ? `Device: ${activeDevice.label}`
-                  : "No active device — register one below to scan."}
+                {activeDevice ? `Device: ${activeDevice.label}` : "No active device — register one below to scan."}
               </p>
             </div>
           </div>
           <div className="flex flex-col items-center gap-2">
-            <Button
-              size="lg"
-              className="h-14 w-44 text-base shadow-xl shadow-primary/25"
-              disabled={!canScan || scanning}
-              onClick={handleScan}
-            >
+            <Button size="lg" className="h-14 w-44 text-base shadow-xl shadow-primary/25"
+              disabled={!canScan || scanning} onClick={handleScan}>
               {scanning ? <Loader2 className="size-5 animate-spin" /> : <ScanLine className="size-5" />}
               {openSession ? "Scan to clock out" : "Scan to clock in"}
             </Button>
             {!activeDevice && (
-              <p className="max-w-48 text-center text-[11px] text-muted-foreground">
-                Register a device first
-              </p>
+              <p className="max-w-48 text-center text-[11px] text-muted-foreground">Register a device first</p>
             )}
-            {currentToken && (
-              <button
-                className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                onClick={copyToken}
-                title="Copy current token (for testing)"
-              >
+            {token && (
+              <button className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                onClick={copyToken} title="Copy current token (for testing)">
                 {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
                 {copied ? "Copied" : "Copy token"}
               </button>
             )}
           </div>
         </div>
-        {!openSession && today?.workedMinutes != null && (
+        {today?.worked_minutes != null && (
           <p className="mt-3 text-center text-xs text-muted-foreground">
-            Worked {((today.workedMinutes ?? 0) / 60).toFixed(1)}h today
+            Worked {((today.worked_minutes ?? 0) / 60).toFixed(1)}h today
           </p>
         )}
       </GlassCard>
@@ -250,14 +265,14 @@ export default function MyWorkspace() {
       {/* stats row */}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatTile icon={CalendarDays} label="Today" value={STATUS_META[today?.status ?? "absent"]?.label ?? "—"} />
-        <StatTile icon={Fingerprint} label="Active devices" value={(myDevices ?? []).filter((d) => d.status === "active").length} />
+        <StatTile icon={Fingerprint} label="Active devices" value={devices.filter((d) => d.status === "active").length} />
         <StatTile
           icon={Plane}
           label="Leave balance"
-          value={balances ? balances.reduce((a, b) => a + Math.max(0, b.quota - b.used), 0) : "—"}
+          value={balances.reduce((a, b) => a + Math.max(0, (b.leave_types?.annual_quota_days ?? 0) - Number(b.used_days)), 0)}
           hint="days remaining"
         />
-        <StatTile icon={TimerReset} label="Corrections" value={myCorrections ? myCorrections.filter((c) => c.status === "pending").length : "—"} hint="pending" />
+        <StatTile icon={TimerReset} label="Corrections" value={myCorrections.filter((c) => c.status === "pending").length} hint="pending" />
       </div>
 
       <Tabs defaultValue="history" className="space-y-4">
@@ -268,15 +283,12 @@ export default function MyWorkspace() {
           <TabsTrigger value="corrections" className="rounded-lg">Corrections</TabsTrigger>
         </TabsList>
 
-        {/* history */}
         <TabsContent value="history">
           <GlassCard className="p-5">
             <h3 className="mb-3 flex items-center gap-2 font-semibold">
               <History className="size-4 text-primary" /> Attendance history
             </h3>
-            {!history ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
-            ) : history.length === 0 ? (
+            {history.length === 0 ? (
               <Empty icon={History} text="No attendance records yet — scan to clock in." />
             ) : (
               <div className="overflow-x-auto">
@@ -292,18 +304,16 @@ export default function MyWorkspace() {
                   </thead>
                   <tbody>
                     {history.map((s) => (
-                      <tr key={s._id} className="border-b border-white/30 last:border-0">
-                        <td className="py-2.5 pr-3 font-medium">{fmtDay(s.dayKey)}</td>
-                        <td className="py-2.5 pr-3">{fmtTime(s.clockInAt)}</td>
-                        <td className="py-2.5 pr-3">{s.clockOutAt ? fmtTime(s.clockOutAt) : "—"}</td>
-                        <td className="py-2.5 pr-3">{s.workedMinutes != null ? `${(s.workedMinutes / 60).toFixed(1)}h` : "—"}</td>
+                      <tr key={s.id} className="border-b border-white/30 last:border-0">
+                        <td className="py-2.5 pr-3 font-medium">{fmtDay(s.day_key)}</td>
+                        <td className="py-2.5 pr-3">{fmtTime(s.clock_in_at)}</td>
+                        <td className="py-2.5 pr-3">{s.clock_out_at ? fmtTime(s.clock_out_at) : "—"}</td>
+                        <td className="py-2.5 pr-3">{s.worked_minutes != null ? `${(s.worked_minutes / 60).toFixed(1)}h` : "—"}</td>
                         <td className="py-2.5 pr-3">
                           <Badge variant="secondary" className={STATUS_META[s.status]?.cls ?? ""}>
                             {STATUS_META[s.status]?.label ?? s.status}
                           </Badge>
-                          {s.lateMinutes > 0 && (
-                            <span className="ml-1.5 text-[10px] text-amber-700">+{s.lateMinutes}m</span>
-                          )}
+                          {s.late_minutes > 0 && <span className="ml-1.5 text-[10px] text-amber-700">+{s.late_minutes}m</span>}
                         </td>
                       </tr>
                     ))}
@@ -314,7 +324,6 @@ export default function MyWorkspace() {
           </GlassCard>
         </TabsContent>
 
-        {/* devices */}
         <TabsContent value="devices">
           <GlassCard className="p-5">
             <div className="mb-3 flex items-center justify-between">
@@ -329,7 +338,7 @@ export default function MyWorkspace() {
                   <DialogHeader>
                     <DialogTitle>Register a device</DialogTitle>
                     <DialogDescription>
-                      A device-bound key fingerprint is created. Keep your device secure — only HR can approve replacements.
+                      A device-bound key fingerprint is created. Only HR can approve replacements.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="space-y-3">
@@ -355,41 +364,35 @@ export default function MyWorkspace() {
                 </DialogContent>
               </Dialog>
             </div>
-            {!myDevices ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
-            ) : myDevices.length === 0 ? (
+            {devices.length === 0 ? (
               <Empty icon={Smartphone} text="No devices registered yet." />
             ) : (
               <div className="space-y-2">
-                {myDevices.map((d) => {
+                {devices.map((d) => {
                   const meta = DEVICE_STATUS_META[d.status];
                   return (
-                    <div key={d._id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
+                    <div key={d.id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
                       <div className="flex items-center gap-3">
                         <div className="glass-inset flex size-9 items-center justify-center rounded-lg">
                           <Smartphone className="size-4 text-primary" />
                         </div>
                         <div>
                           <p className="text-sm font-semibold">{d.label} <span className="ml-1 text-xs font-normal text-muted-foreground">· {d.platform}</span></p>
-                          <p className="font-mono text-[10px] text-muted-foreground">fp:{d.publicKeyFingerprint.slice(0, 16)}…</p>
+                          <p className="font-mono text-[10px] text-muted-foreground">fp:{d.public_key_fingerprint.slice(0, 16)}…</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge variant="secondary" className={meta.cls}>{meta.label}</Badge>
+                        <Badge variant="secondary" className={meta?.cls ?? ""}>{meta?.label ?? d.status}</Badge>
                         {d.status === "active" && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="glass h-7 text-xs"
+                          <Button size="sm" variant="outline" className="glass h-7 text-xs"
                             onClick={async () => {
                               try {
-                                await requestReplacement({ deviceId: d._id, reason: "Lost / replacing device" });
+                                const { error } = await supabase.rpc("request_device_replacement", { p_device: d.id, p_reason: "Lost / replacing device" });
+                                if (error) throw error;
                                 toast.success("Replacement requested — HR will review.");
-                              } catch (e) {
-                                toast.error(e instanceof Error ? e.message : "Failed");
-                              }
-                            }}
-                          >
+                                load();
+                              } catch (e) { toast.error(err(e)); }
+                            }}>
                             Request replacement
                           </Button>
                         )}
@@ -407,7 +410,6 @@ export default function MyWorkspace() {
           </GlassCard>
         </TabsContent>
 
-        {/* leave */}
         <TabsContent value="leave">
           <div className="grid gap-4 lg:grid-cols-3">
             <GlassCard className="p-5">
@@ -428,8 +430,8 @@ export default function MyWorkspace() {
                         <Select value={leaveType} onValueChange={setLeaveType}>
                           <SelectTrigger className="mt-1.5"><SelectValue placeholder="Select type" /></SelectTrigger>
                           <SelectContent>
-                            {(balances ?? []).map((b) => (
-                              <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
+                            {leaveTypes.map((t) => (
+                              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
                             ))}
                           </SelectContent>
                         </Select>
@@ -456,24 +458,22 @@ export default function MyWorkspace() {
                   </DialogContent>
                 </Dialog>
               </div>
-              {!balances ? (
+              {balances.length === 0 ? (
                 <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
               ) : (
                 <div className="space-y-2.5">
                   {balances.map((b) => {
-                    const remaining = Math.max(0, b.quota - b.used);
-                    const pct = b.quota > 0 ? remaining / b.quota : 0;
+                    const quota = b.leave_types?.annual_quota_days ?? 0;
+                    const remaining = Math.max(0, quota - Number(b.used_days));
+                    const pct = quota > 0 ? remaining / quota : 0;
                     return (
                       <div key={b.id} className="glass-soft rounded-xl p-3.5">
                         <div className="flex items-center justify-between text-sm">
-                          <span className="font-medium">{b.name}</span>
-                          <span className="text-muted-foreground">{remaining} / {b.quota} days</span>
+                          <span className="font-medium">{b.leave_types?.name ?? "Leave"}</span>
+                          <span className="text-muted-foreground">{remaining} / {quota} days</span>
                         </div>
                         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/50">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-primary/80 to-primary/50"
-                            style={{ width: `${pct * 100}%` }}
-                          />
+                          <div className="h-full rounded-full bg-gradient-to-r from-primary/80 to-primary/50" style={{ width: `${pct * 100}%` }} />
                         </div>
                       </div>
                     );
@@ -482,31 +482,24 @@ export default function MyWorkspace() {
               )}
             </GlassCard>
 
-            <GlassCard className="lg:col-span-2 p-5">
+            <GlassCard className="p-5 lg:col-span-2">
               <h3 className="mb-3 font-semibold">My requests</h3>
-              {!myLeave ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
-              ) : myLeave.length === 0 ? (
+              {myLeave.length === 0 ? (
                 <Empty icon={Plane} text="No leave requests yet." />
               ) : (
                 <div className="space-y-2">
                   {myLeave.map((r) => (
-                    <div key={r._id} className="glass-soft flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3">
+                    <div key={r.id} className="glass-soft flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3">
                       <div>
-                        <p className="text-sm font-medium">
-                          {r.typeName} · {r.startDate} → {r.endDate}
-                        </p>
+                        <p className="text-sm font-medium">{r.leave_types?.name ?? "Leave"} · {r.start_date} → {r.end_date}</p>
                         <p className="text-xs text-muted-foreground">{r.reason}</p>
                       </div>
-                      <Badge
-                        variant="secondary"
-                        className={
-                          r.status === "approved" ? "bg-emerald-500/15 text-emerald-700"
-                          : r.status === "rejected" ? "bg-rose-500/15 text-rose-700"
-                          : r.status === "cancelled" ? "bg-slate-500/15 text-slate-600"
-                          : "bg-amber-500/15 text-amber-700"
-                        }
-                      >
+                      <Badge variant="secondary" className={
+                        r.status === "approved" ? "bg-emerald-500/15 text-emerald-700"
+                        : r.status === "rejected" ? "bg-rose-500/15 text-rose-700"
+                        : r.status === "cancelled" ? "bg-slate-500/15 text-slate-600"
+                        : "bg-amber-500/15 text-amber-700"
+                      }>
                         {r.status}
                       </Badge>
                     </div>
@@ -517,7 +510,6 @@ export default function MyWorkspace() {
           </div>
         </TabsContent>
 
-        {/* corrections */}
         <TabsContent value="corrections">
           <GlassCard className="p-5">
             <div className="mb-3 flex items-center justify-between">
@@ -562,31 +554,24 @@ export default function MyWorkspace() {
                 </DialogContent>
               </Dialog>
             </div>
-            {!myCorrections ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
-            ) : myCorrections.length === 0 ? (
+            {myCorrections.length === 0 ? (
               <Empty icon={TimerReset} text="No correction requests yet." />
             ) : (
               <div className="space-y-2">
                 {myCorrections.map((c) => (
-                  <div key={c._id} className="glass-soft rounded-xl px-4 py-3">
+                  <div key={c.id} className="glass-soft rounded-xl px-4 py-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <p className="text-sm font-medium">{c.sessionDate}</p>
-                      <Badge
-                        variant="secondary"
-                        className={
-                          c.status === "approved" ? "bg-emerald-500/15 text-emerald-700"
-                          : c.status === "rejected" ? "bg-rose-500/15 text-rose-700"
-                          : "bg-amber-500/15 text-amber-700"
-                        }
-                      >
+                      <p className="text-sm font-medium">{c.session_date}</p>
+                      <Badge variant="secondary" className={
+                        c.status === "approved" ? "bg-emerald-500/15 text-emerald-700"
+                        : c.status === "rejected" ? "bg-rose-500/15 text-rose-700"
+                        : "bg-amber-500/15 text-amber-700"
+                      }>
                         {c.status}
                       </Badge>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">{c.reason}</p>
-                    {c.reviewerNote && (
-                      <p className="mt-1 text-xs italic text-muted-foreground">HR: {c.reviewerNote}</p>
-                    )}
+                    {c.reviewer_note && <p className="mt-1 text-xs italic text-muted-foreground">HR: {c.reviewer_note}</p>}
                   </div>
                 ))}
               </div>
@@ -597,3 +582,14 @@ export default function MyWorkspace() {
     </AppShell>
   );
 }
+
+type Session0 = {
+  id: string;
+  day_key: string;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  break_minutes: number;
+  status: string;
+  late_minutes: number;
+  worked_minutes: number | null;
+};

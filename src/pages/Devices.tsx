@@ -1,14 +1,26 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty, StatTile } from "@/components/glass";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useQuery, useMutation } from "convex/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Fingerprint, Smartphone, ShieldCheck, ShieldX, RotateCcw, RefreshCw, ScrollText,
 } from "lucide-react";
+import { supabase, err } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
+
+type DeviceRow = {
+  id: string;
+  label: string;
+  platform: string;
+  status: "active" | "pending_replacement" | "revoked";
+  public_key_fingerprint: string;
+  registered_at: string;
+  employees: { name: string } | null;
+};
+
+type EventRow = { id: string; type: string; detail: string | null; at: string };
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   active: { label: "Active", cls: "bg-emerald-500/15 text-emerald-700" },
@@ -17,25 +29,47 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 };
 
 export default function Devices() {
-  const data = useQuery(api.devices.companyDevices, {});
-  const decideReplacement = useMutation(api.devices.decideReplacement);
-  const revoke = useMutation(api.devices.revoke);
-  const reactivate = useMutation(api.devices.reactivate);
-  const [busy, setBusy] = useState<string | null>(null);
+  const { ws } = useWorkspace();
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [events, setEvents] = useState<EventRow[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const act = async (fn: () => Promise<unknown>, msg: string, id: string) => {
-    setBusy(id);
+  const load = async () => {
+    if (!ws) return;
+    const cid = ws.employee.company_id;
+    const [d, ev] = await Promise.all([
+      supabase.from("registered_devices").select("*").eq("company_id", cid).order("registered_at", { ascending: false }),
+      supabase.from("device_events").select("id, type, detail, at").eq("company_id", cid).order("at", { ascending: false }).limit(40),
+    ]);
+    // attach employee names
+    const { data: emps } = await supabase.from("employees").select("id, name").eq("company_id", cid);
+    const nameMap = new Map(((emps ?? []) as Array<{ id: string; name: string }>).map((e) => [e.id, e.name]));
+    setDevices(
+      ((d.data ?? []) as Array<Record<string, unknown>>).map((x) => ({
+        ...(x as unknown as DeviceRow),
+        employees: { name: nameMap.get(x.employee_id as string) ?? "Unknown" },
+      })),
+    );
+    setEvents((ev.data ?? []) as EventRow[]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws]);
+
+  const act = async (fn: () => unknown, msg: string) => {
     try {
       await fn();
       toast.success(msg);
+      load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
-    } finally {
-      setBusy(null);
+      toast.error(err(e));
     }
   };
 
-  if (!data) {
+  if (loading) {
     return (
       <AppShell title="Devices">
         <GlassCard className="p-10 text-center text-sm text-muted-foreground">
@@ -45,7 +79,6 @@ export default function Devices() {
     );
   }
 
-  const { devices, events } = data;
   const active = devices.filter((d) => d.status === "active").length;
   const pending = devices.filter((d) => d.status === "pending_replacement");
 
@@ -69,24 +102,18 @@ export default function Devices() {
           </h3>
           <div className="space-y-2.5">
             {pending.map((d) => (
-              <div key={d._id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
+              <div key={d.id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
                 <div>
-                  <p className="text-sm font-semibold">{d.employee?.name ?? "Unknown"} — {d.label}</p>
-                  <p className="text-xs text-muted-foreground">{d.platform} · registered {new Date(d.registeredAt).toLocaleDateString()}</p>
+                  <p className="text-sm font-semibold">{d.employees?.name ?? "Unknown"} — {d.label}</p>
+                  <p className="text-xs text-muted-foreground">{d.platform} · registered {new Date(d.registered_at).toLocaleDateString()}</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button
-                    size="sm" className="h-8"
-                    disabled={busy === d._id}
-                    onClick={() => act(() => decideReplacement({ deviceId: d._id, approve: true }), "Replacement approved — old device revoked", d._id)}
-                  >
+                  <Button size="sm" className="h-8"
+                    onClick={() => act(() => supabase.rpc("decide_device_replacement", { p_device: d.id, p_approve: true }), "Replacement approved — old device revoked")}>
                     Approve & revoke
                   </Button>
-                  <Button
-                    size="sm" variant="outline" className="glass h-8"
-                    disabled={busy === d._id}
-                    onClick={() => act(() => decideReplacement({ deviceId: d._id, approve: false }), "Replacement rejected", d._id)}
-                  >
+                  <Button size="sm" variant="outline" className="glass h-8"
+                    onClick={() => act(() => supabase.rpc("decide_device_replacement", { p_device: d.id, p_approve: false }), "Replacement rejected")}>
                     Reject
                   </Button>
                 </div>
@@ -106,33 +133,27 @@ export default function Devices() {
               {devices.map((d) => {
                 const meta = STATUS_META[d.status];
                 return (
-                  <div key={d._id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
+                  <div key={d.id} className="glass-soft flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3">
                     <div className="flex items-center gap-3">
                       <div className="glass-inset flex size-9 items-center justify-center rounded-lg">
                         <Smartphone className="size-4 text-primary" />
                       </div>
                       <div>
-                        <p className="text-sm font-semibold">{d.employee?.name ?? "Unknown"} <span className="ml-1 text-xs font-normal text-muted-foreground">· {d.label}</span></p>
-                        <p className="font-mono text-[10px] text-muted-foreground">fp:{d.publicKeyFingerprint.slice(0, 16)}…</p>
+                        <p className="text-sm font-semibold">{d.employees?.name ?? "Unknown"} <span className="ml-1 text-xs font-normal text-muted-foreground">· {d.label}</span></p>
+                        <p className="font-mono text-[10px] text-muted-foreground">fp:{d.public_key_fingerprint.slice(0, 16)}…</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant="secondary" className={meta.cls}>{meta.label}</Badge>
+                      <Badge variant="secondary" className={meta?.cls ?? ""}>{meta?.label ?? d.status}</Badge>
                       {d.status === "active" && (
-                        <Button
-                          size="sm" variant="outline" className="glass h-7 text-xs text-destructive"
-                          disabled={busy === d._id}
-                          onClick={() => act(() => revoke({ deviceId: d._id, reason: "Revoked by HR" }), "Device revoked", d._id)}
-                        >
+                        <Button size="sm" variant="outline" className="glass h-7 text-xs text-destructive"
+                          onClick={() => act(() => supabase.rpc("revoke_device", { p_device: d.id, p_reason: "Revoked by HR" }), "Device revoked")}>
                           Revoke
                         </Button>
                       )}
                       {d.status === "revoked" && (
-                        <Button
-                          size="sm" variant="outline" className="glass h-7 text-xs"
-                          disabled={busy === d._id}
-                          onClick={() => act(() => reactivate({ deviceId: d._id }), "Device reactivated", d._id)}
-                        >
+                        <Button size="sm" variant="outline" className="glass h-7 text-xs"
+                          onClick={() => act(() => supabase.rpc("reactivate_device", { p_device: d.id }), "Device reactivated")}>
                           <RotateCcw className="size-3.5" /> Reactivate
                         </Button>
                       )}
@@ -153,16 +174,13 @@ export default function Devices() {
           ) : (
             <div className="max-h-96 space-y-2 overflow-y-auto pr-1">
               {events.map((ev) => (
-                <div key={ev._id} className="glass-soft rounded-xl px-3.5 py-2.5">
+                <div key={ev.id} className="glass-soft rounded-xl px-3.5 py-2.5">
                   <div className="flex items-center justify-between">
-                    <Badge
-                      variant="secondary"
-                      className={
-                        ev.type === "registered" ? "bg-emerald-500/15 text-emerald-700"
-                        : ev.type === "revoked" || ev.type === "scan_rejected" ? "bg-rose-500/15 text-rose-700"
-                        : "bg-amber-500/15 text-amber-700"
-                      }
-                    >
+                    <Badge variant="secondary" className={
+                      ev.type === "registered" ? "bg-emerald-500/15 text-emerald-700"
+                      : ev.type === "revoked" || ev.type === "scan_rejected" ? "bg-rose-500/15 text-rose-700"
+                      : "bg-amber-500/15 text-amber-700"
+                    }>
                       {ev.type.replace(/_/g, " ")}
                     </Badge>
                     <span className="text-[10px] text-muted-foreground">{new Date(ev.at).toLocaleDateString()}</span>

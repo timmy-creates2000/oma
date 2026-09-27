@@ -1,5 +1,3 @@
-import { api } from "@/convex/_generated/api";
-import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -10,14 +8,16 @@ import {
 } from "@/components/ui/popover";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { GlassCard } from "@/components/glass";
+import { useWorkspace } from "@/hooks/use-workspace";
+import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
+import { supabase, type Notification } from "@/lib/sb";
 import {
   LayoutDashboard, Radio, Users, Fingerprint, QrCode, CalendarDays,
   Wrench, BarChart3, FileText, Bell, ScrollText, Settings, ScanLine,
-  LogOut, Building2, ClipboardCheck, Timer,
+  LogOut, Building2, ClipboardCheck, Timer, CheckCheck,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
-import { useQuery, useMutation } from "convex/react";
 
 const NAV: Array<{ to: string; label: string; icon: React.ComponentType<{ className?: string }>; perm?: string }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -36,17 +36,68 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<{ classN
   { to: "/settings", label: "Settings", icon: Settings, perm: "manage_settings" },
 ];
 
+export function hasPerm(role: string | undefined, perm: string): boolean {
+  const map: Record<string, string[]> = {
+    company_admin: [
+      "manage_company", "manage_employees", "manage_attendance", "manage_leave",
+      "manage_devices", "manage_qr", "view_reports", "view_audit", "manage_settings",
+      "approve_leave", "approve_corrections", "approve_devices",
+    ],
+    hr_admin: [
+      "manage_employees", "manage_attendance", "manage_leave", "manage_devices",
+      "manage_qr", "view_reports", "approve_leave", "approve_corrections", "approve_devices",
+    ],
+    manager: ["view_reports", "approve_leave", "review_corrections"],
+    employee: [],
+  };
+  return (map[role ?? "employee"] ?? []).includes(perm);
+}
+
 export function AppShell({ children, title }: { children: ReactNode; title?: string }) {
-  const { user, signOut } = useAuth();
+  const { user, signOut } = useSupabaseAuth();
+  const { ws } = useWorkspace();
   const navigate = useNavigate();
-  const ws = useQuery(api.workspace.get);
-  const notifications = useQuery(api.platform.myNotifications, { limit: 20 });
-  const markAllRead = useMutation(api.platform.markAllRead);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
 
   const role = ws?.employee.role ?? "employee";
   const visibleNav = NAV.filter((item) => !item.perm || hasPerm(role, item.perm));
-  const unread = (notifications ?? []).filter((n) => !n.readAt).length;
+  const unread = notifications.filter((n) => !n.read_at).length;
+
+  useEffect(() => {
+    if (!ws) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    async function load() {
+      const { data } = await supabase
+        .from("notifications")
+        .select("*")
+        .eq("company_id", ws!.employee.company_id)
+        .or(`audience.eq.admins,audience.eq.employee,for_user_id.eq.${user?.id}`)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      setNotifications((data ?? []) as unknown as Notification[]);
+    }
+    load();
+
+    channel = supabase
+      .channel("of-notifications")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "notifications", filter: `company_id=eq.${ws!.employee.company_id}` },
+        () => load(),
+      )
+      .subscribe();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [ws, user?.id]);
+
+  const markAllRead = async () => {
+    await supabase.rpc("mark_notifications_read", { p_all: true });
+    setNotifications((prev) => prev.map((n) => ({ ...n, read_at: new Date().toISOString() })));
+  };
 
   const handleSignOut = async () => {
     await signOut();
@@ -98,11 +149,11 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
               <div className="flex items-center gap-2.5">
                 <Avatar className="size-8">
                   <AvatarFallback className="bg-primary/15 text-xs font-bold text-primary">
-                    {(ws?.employee.name ?? user?.name ?? "?").slice(0, 2).toUpperCase()}
+                    {(ws?.employee.name ?? user?.email ?? "?").slice(0, 2).toUpperCase()}
                   </AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-semibold">{ws?.employee.name ?? user?.name}</p>
+                  <p className="truncate text-xs font-semibold">{ws?.employee.name ?? user?.email}</p>
                   <p className="truncate text-[10px] capitalize text-muted-foreground">
                     {(role ?? "").replace("_", " ")}
                   </p>
@@ -124,7 +175,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                 <DropdownMenu open={open} onOpenChange={setOpen}>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="size-9">
-                      <LayoutDashboard className="size-4.5" />
+                      <Wrench className="size-4.5" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" className="w-56">
@@ -138,7 +189,9 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
               </div>
               <div>
                 <p className="text-[11px] text-muted-foreground">{ws?.company?.name}</p>
-                <p className="text-sm font-semibold leading-tight">{title ?? visibleNav.find((n) => location.pathname.startsWith(n.to))?.label ?? "OfficeFlow"}</p>
+                <p className="text-sm font-semibold leading-tight">
+                  {title ?? visibleNav.find((n) => location.pathname.startsWith(n.to))?.label ?? "OfficeFlow"}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -156,16 +209,16 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                 <PopoverContent align="end" className="w-80 p-0">
                   <div className="flex items-center justify-between border-b px-4 py-3">
                     <p className="text-sm font-semibold">Notifications</p>
-                    <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => markAllRead({})}>
-                      Mark all read
+                    <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={markAllRead}>
+                      <CheckCheck className="mr-1 size-3.5" /> Mark all read
                     </Button>
                   </div>
                   <div className="max-h-80 overflow-y-auto">
-                    {(notifications ?? []).length === 0 && (
+                    {notifications.length === 0 && (
                       <p className="px-4 py-8 text-center text-sm text-muted-foreground">You're all caught up.</p>
                     )}
-                    {(notifications ?? []).slice(0, 8).map((n) => (
-                      <div key={n._id} className={`border-b px-4 py-3 last:border-0 ${n.readAt ? "opacity-55" : ""}`}>
+                    {notifications.slice(0, 8).map((n) => (
+                      <div key={n.id} className={`border-b px-4 py-3 last:border-0 ${n.read_at ? "opacity-55" : ""}`}>
                         <p className="text-xs font-semibold">{n.title}</p>
                         <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>
                       </div>
@@ -181,14 +234,14 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                   <Button variant="ghost" className="glass-soft h-9 gap-2 rounded-xl px-2">
                     <Avatar className="size-6">
                       <AvatarFallback className="bg-primary/15 text-[10px] font-bold text-primary">
-                        {(ws?.employee.name ?? user?.name ?? "?").slice(0, 2).toUpperCase()}
+                        {(ws?.employee.name ?? user?.email ?? "?").slice(0, 2).toUpperCase()}
                       </AvatarFallback>
                     </Avatar>
                     <Building2 className="size-3.5 text-muted-foreground lg:hidden" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-48">
-                  <DropdownMenuLabel className="text-xs">{user?.email}</DropdownMenuLabel>
+                  <DropdownMenuLabel className="text-xs">{user?.email ?? "Guest"}</DropdownMenuLabel>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => navigate("/settings")}>
                     <Settings className="size-4" /> Settings
@@ -206,21 +259,4 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
       </div>
     </div>
   );
-}
-
-export function hasPerm(role: string, perm: string): boolean {
-  const map: Record<string, string[]> = {
-    company_admin: [
-      "manage_company", "manage_employees", "manage_attendance", "manage_leave",
-      "manage_devices", "manage_qr", "view_reports", "view_audit", "manage_settings",
-      "approve_leave", "approve_corrections", "approve_devices",
-    ],
-    hr_admin: [
-      "manage_employees", "manage_attendance", "manage_leave", "manage_devices",
-      "manage_qr", "view_reports", "approve_leave", "approve_corrections", "approve_devices",
-    ],
-    manager: ["view_reports", "approve_leave", "review_corrections"],
-    employee: [],
-  };
-  return (map[role] ?? []).includes(perm);
 }

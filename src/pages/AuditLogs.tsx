@@ -1,25 +1,40 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty } from "@/components/glass";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { useQuery } from "convex/react";
-import { useMemo, useState } from "react";
-import { ScrollText, Search } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ScrollText, Search, Loader2 } from "lucide-react";
+import { supabase, type AuditLog } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 export default function AuditLogs() {
-  const logs = useQuery(api.platform.auditLogs, { limit: 300 });
+  const { ws } = useWorkspace();
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
 
+  useEffect(() => {
+    if (!ws) return;
+    (async () => {
+      const { data } = await supabase
+        .from("audit_logs")
+        .select("*")
+        .eq("company_id", ws.employee.company_id)
+        .order("at", { ascending: false })
+        .limit(300);
+      setLogs((data ?? []) as unknown as AuditLog[]);
+      setLoading(false);
+    })();
+  }, [ws]);
+
   const rows = useMemo(() => {
-    if (!logs) return [];
     if (!q.trim()) return logs;
-    const needle = q.toLowerCase();
+    const n = q.toLowerCase();
     return logs.filter(
       (l) =>
-        l.action.toLowerCase().includes(needle) ||
-        (l.detail ?? "").toLowerCase().includes(needle) ||
-        l.actorEmail.toLowerCase().includes(needle),
+        l.action.toLowerCase().includes(n) ||
+        (l.detail ?? "").toLowerCase().includes(n) ||
+        l.actor_email.toLowerCase().includes(n),
     );
   }, [logs, q]);
 
@@ -37,8 +52,10 @@ export default function AuditLogs() {
         </div>
       </GlassCard>
 
-      {!logs ? (
-        <GlassCard className="p-10 text-center text-sm text-muted-foreground">Loading…</GlassCard>
+      {loading ? (
+        <GlassCard className="p-10 text-center text-sm text-muted-foreground">
+          <Loader2 className="mx-auto mb-2 size-5 animate-spin" /> Loading…
+        </GlassCard>
       ) : rows.length === 0 ? (
         <GlassCard className="p-5"><Empty icon={ScrollText} text="No log entries match." /></GlassCard>
       ) : (
@@ -54,11 +71,11 @@ export default function AuditLogs() {
             </thead>
             <tbody>
               {rows.map((l) => (
-                <tr key={l._id} className="border-b border-white/30 last:border-0">
+                <tr key={l.id} className="border-b border-white/30 last:border-0">
                   <td className="whitespace-nowrap px-3 py-2.5 text-xs text-muted-foreground">
                     {new Date(l.at).toLocaleString()}
                   </td>
-                  <td className="px-3 py-2.5 font-medium">{l.actorEmail}</td>
+                  <td className="px-3 py-2.5 font-medium">{l.actor_email}</td>
                   <td className="px-3 py-2.5">
                     <Badge variant="secondary" className="bg-primary/10 font-mono text-[10px] text-primary">
                       {l.action}

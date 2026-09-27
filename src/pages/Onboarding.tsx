@@ -1,12 +1,12 @@
-import { api } from "@/convex/_generated/api";
-import { useMutation } from "convex/react";
+import { useWorkspace } from "@/hooks/use-workspace";
+import { supabase, err } from "@/lib/sb";
+import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { GlassCard } from "@/components/glass";
 import {
   Building2, Sparkles, Users2, ArrowRight, Loader2, Clock, Mail,
@@ -16,6 +16,8 @@ const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default function Onboarding() {
   const navigate = useNavigate();
+  const { refresh } = useWorkspace();
+  const { user } = useSupabaseAuth();
   const [mode, setMode] = useState<"create" | "demo" | "join">("create");
   const [companyName, setCompanyName] = useState("");
   const [industry, setIndustry] = useState("");
@@ -26,34 +28,60 @@ export default function Onboarding() {
   const [joinCode, setJoinCode] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const createCompany = useMutation(api.workspace.createCompany);
-  const seedDemo = useMutation(api.workspace.seedDemoData);
-  const join = useMutation(api.workspace.joinByCode);
-
-  const toMinutes = (t: string) => {
-    const [h, m] = t.split(":").map(Number);
-    return h * 60 + m;
+  const finish = async (companyId: string, seed: boolean) => {
+    if (seed) {
+      const { error } = await supabase.rpc("seed_demo", { p_company: companyId });
+      if (error) throw error;
+    }
+    refresh();
+    toast.success(seed ? "Demo workspace ready!" : "Workspace created!");
+    navigate("/dashboard");
   };
 
-  const handleCreate = async () => {
+  const handleCreate = async (seed: boolean) => {
+    const toMinutes = (t: string) => {
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+    if (seed) {
+      setBusy(true);
+      try {
+        const name = companyName.trim() || "Northwind Labs";
+        const { data, error } = await supabase.rpc("create_company", {
+          p_name: name,
+          p_industry: industry.trim() || "Technology",
+          p_start: toMinutes(start),
+          p_end: toMinutes(end),
+          p_grace: Number(grace) || 10,
+          p_work_days: workDays,
+        });
+        if (error) throw error;
+        await finish(data as string, true);
+      } catch (e) {
+        toast.error(err(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     if (!companyName.trim()) return toast.error("Company name is required");
     if (toMinutes(end) <= toMinutes(start)) return toast.error("End time must be after start time");
     if (workDays.length === 0) return toast.error("Pick at least one working day");
     setBusy(true);
     try {
-      const res = await createCompany({
-        companyName: companyName.trim(),
-        industry: industry.trim() || undefined,
-        startMinutes: toMinutes(start),
-        endMinutes: toMinutes(end),
-        lateGraceMinutes: Number(grace) || 10,
-        workDays,
+      const { data, error } = await supabase.rpc("create_company", {
+        p_name: companyName.trim(),
+        p_industry: industry.trim() || null,
+        p_start: toMinutes(start),
+        p_end: toMinutes(end),
+        p_grace: Number(grace) || 10,
+        p_work_days: workDays,
       });
-      await seedDemo({ companyId: res.companyId });
-      toast.success("Workspace ready with demo data!");
-      navigate("/dashboard");
+      if (error) throw error;
+      await finish(data as string, false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to create workspace");
+      toast.error(err(e));
     } finally {
       setBusy(false);
     }
@@ -63,19 +91,18 @@ export default function Onboarding() {
     if (!joinCode.trim()) return toast.error("Enter an invite code");
     setBusy(true);
     try {
-      await join({ code: joinCode.trim() });
-      toast.success("Welcome to the team!");
-      navigate("/dashboard");
+      const { data, error } = await supabase.rpc("join_company", { p_code: joinCode.trim() });
+      if (error) throw error;
+      await finish(data as string, false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to join");
+      toast.error(err(e));
     } finally {
       setBusy(false);
     }
   };
 
-  const toggleDay = (d: number) => {
+  const toggleDay = (d: number) =>
     setWorkDays((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
-  };
 
   return (
     <div className="relative flex min-h-screen items-center justify-center p-6">
@@ -91,6 +118,7 @@ export default function Onboarding() {
           </div>
           <h1 className="text-xl font-bold tracking-tight">Set up your workspace</h1>
           <p className="mt-1 text-sm text-muted-foreground">
+            {user?.email ? `Signed in as ${user.email} · ` : ""}
             Create your company, explore the demo, or join a team.
           </p>
         </div>
@@ -160,11 +188,11 @@ export default function Onboarding() {
                 ))}
               </div>
             </div>
-            <Button className="w-full" size="lg" disabled={busy} onClick={handleCreate}>
+            <Button className="w-full" size="lg" disabled={busy} onClick={() => handleCreate(false)}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <>Create workspace <ArrowRight className="size-4" /></>}
             </Button>
             <p className="text-center text-xs text-muted-foreground">
-              Includes a demo dataset: 21 employees, 30 days of attendance, leave, devices & more.
+              You can load the demo dataset afterwards from onboarding's Demo tab.
             </p>
           </div>
         )}
@@ -175,11 +203,13 @@ export default function Onboarding() {
               <Sparkles className="mx-auto mb-2 size-8 text-primary" />
               <h3 className="font-semibold">Load the demo workspace</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                A company sized 21 with 30 days of realistic attendance, leave requests,
-                devices, corrections and notifications — so you can explore every screen.
+                Creates "Northwind Labs" with 21 people, 30 days of realistic attendance,
+                leave requests, devices, corrections and notifications.
               </p>
             </div>
-            <DemoCreateForm busy={busy} setBusy={setBusy} />
+            <Button size="lg" className="w-full" disabled={busy} onClick={() => handleCreate(true)}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <>Load demo workspace <ArrowRight className="size-4" /></>}
+            </Button>
           </div>
         )}
 
@@ -197,8 +227,8 @@ export default function Onboarding() {
                 onChange={(e) => setJoinCode(e.target.value)}
               />
               <p className="mt-2 text-xs text-muted-foreground">
-                Ask HR for your company slug and seat code (e.g. <code>acme-inc:EMP-005</code>).
-                If a seat was pre-created with your email, the suffix is optional.
+                Ask HR for the company slug and your seat code (e.g. <code>acme-inc:EMP-005</code>).
+                If a seat was pre-created with your email, the company slug alone is enough.
               </p>
             </div>
             <Button className="w-full" size="lg" disabled={busy} onClick={handleJoin}>
@@ -208,38 +238,5 @@ export default function Onboarding() {
         )}
       </GlassCard>
     </div>
-  );
-}
-
-function DemoCreateForm({ busy, setBusy }: { busy: boolean; setBusy: (v: boolean) => void }) {
-  const navigate = useNavigate();
-  const createCompany = useMutation(api.workspace.createCompany);
-  const seedDemo = useMutation(api.workspace.seedDemoData);
-
-  const handle = async () => {
-    setBusy(true);
-    try {
-      const res = await createCompany({
-        companyName: "Northwind Labs",
-        industry: "Technology",
-        startMinutes: 9 * 60,
-        endMinutes: 17 * 60 + 30,
-        lateGraceMinutes: 10,
-        workDays: [1, 2, 3, 4, 5],
-      });
-      await seedDemo({ companyId: res.companyId });
-      toast.success("Demo workspace ready!");
-      navigate("/dashboard");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to load demo");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Button size="lg" className="w-full" disabled={busy} onClick={handle}>
-      {busy ? <Loader2 className="size-4 animate-spin" /> : <>Load demo workspace <ArrowRight className="size-4" /></>}
-    </Button>
   );
 }

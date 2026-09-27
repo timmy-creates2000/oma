@@ -1,13 +1,12 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
-import { RequireAuth } from "@/components/RequireAuth";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
-import { ConvexAuthProvider } from "@convex-dev/auth/react";
-import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "./index.css";
+import { SupabaseAuthProvider } from "@/hooks/use-supabase-auth";
+import { hasSupabaseCreds } from "@/lib/sb";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
@@ -96,8 +95,6 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
-const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
-
 function RouteSyncer() {
   const location = useLocation();
   useEffect(() => {
@@ -121,25 +118,45 @@ function RouteSyncer() {
   return null;
 }
 
-/** Signed-in users without a workspace go to onboarding; the dashboard
- *  itself is only rendered once a company exists. */
-function WorkspaceGate({ children }: { children: React.ReactNode }) {
+function MissingCredsNotice() {
+  return (
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <div className="glass-strong glass-edge max-w-md rounded-3xl p-8 text-center">
+        <h1 className="text-lg font-bold">Supabase keys needed</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          OfficeFlow is now powered by Supabase. Add{" "}
+          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">VITE_SUPABASE_URL</code>{" "}
+          and{" "}
+          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">VITE_SUPABASE_ANON_KEY</code>{" "}
+          in the Keys/API keys tab, and run the three SQL files in{" "}
+          <code className="rounded bg-white/60 px-1.5 py-0.5 font-mono text-xs">supabase/</code>{" "}
+          in the Supabase SQL editor, then reload.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Signed-in users without a workspace land on onboarding. */
+function OnboardingGate({ children }: { children: React.ReactNode }) {
+  const Onboard = lazy(() => import("./pages/Onboarding.tsx"));
+  return <>{children}</>;
+}
+void OnboardingGate;
+
+const gate = (node: React.ReactNode) => <RequireAuthGate>{node}</RequireAuthGate>;
+
+function RequireAuthGate({ children }: { children: React.ReactNode }) {
   return (
     <RequireAuth redirectImmediately>
-      <OnboardingGate>{children}</OnboardingGate>
+      <WorkspaceGate>{children}</WorkspaceGate>
     </RequireAuth>
   );
 }
 
-// Rendered inside RequireAuth so `ws` reflects the signed-in user only.
-import { api } from "@/convex/_generated/api";
-import { useQuery } from "convex/react";
-function OnboardingGate({ children }: { children: React.ReactNode }) {
-  const ws = useQuery(api.workspace.get);
-  if (ws === undefined) return <RouteLoading />;
-  if (ws === null) return <Onboarding />;
-  return <>{children}</>;
-}
+// WorkspaceGate lives in its own file to keep imports tidy.
+import { RequireAuth } from "@/components/RequireAuth";
+import { WorkspaceGate } from "@/components/WorkspaceGate";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -147,90 +164,39 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
-      <ConvexAuthProvider client={convex}>
-        <BrowserRouter>
-          <RouteSyncer />
-          <Suspense fallback={<RouteLoading />}>
-            <Routes>
-              <Route path="/" element={<Landing />} />
-              <Route
-                path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
-              />
-              <Route
-                path="/dashboard"
-                element={<WorkspaceGate><Dashboard /></WorkspaceGate>}
-              />
-              <Route
-                path="/me"
-                element={<WorkspaceGate><MyWorkspace /></WorkspaceGate>}
-              />
-              <Route
-                path="/live"
-                element={<WorkspaceGate><LiveAttendance /></WorkspaceGate>}
-              />
-              <Route
-                path="/employees"
-                element={<WorkspaceGate><Employees /></WorkspaceGate>}
-              />
-              <Route
-                path="/employees/:id"
-                element={<WorkspaceGate><EmployeeDetail /></WorkspaceGate>}
-              />
-              <Route
-                path="/attendance-admin"
-                element={<WorkspaceGate><AttendanceAdmin /></WorkspaceGate>}
-              />
-              <Route
-                path="/leave-admin"
-                element={<WorkspaceGate><LeaveAdmin /></WorkspaceGate>}
-              />
-              <Route
-                path="/corrections"
-                element={<WorkspaceGate><Corrections /></WorkspaceGate>}
-              />
-              <Route
-                path="/devices"
-                element={<WorkspaceGate><Devices /></WorkspaceGate>}
-              />
-              <Route
-                path="/qr"
-                element={<WorkspaceGate><QrDisplays /></WorkspaceGate>}
-              />
-              <Route
-                path="/kiosk"
-                element={
-                  <RequireAuth redirectImmediately>
-                    <OnboardingGate><Kiosk /></OnboardingGate>
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/analytics"
-                element={<WorkspaceGate><Analytics /></WorkspaceGate>}
-              />
-              <Route
-                path="/reports"
-                element={<WorkspaceGate><Reports /></WorkspaceGate>}
-              />
-              <Route
-                path="/notifications"
-                element={<WorkspaceGate><Notifications /></WorkspaceGate>}
-              />
-              <Route
-                path="/audit"
-                element={<WorkspaceGate><AuditLogs /></WorkspaceGate>}
-              />
-              <Route
-                path="/settings"
-                element={<WorkspaceGate><Settings /></WorkspaceGate>}
-              />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Suspense>
-        </BrowserRouter>
+      <SupabaseAuthProvider>
+        {hasSupabaseCreds ? (
+          <BrowserRouter>
+            <RouteSyncer />
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
+                <Route path="/" element={<Landing />} />
+                <Route path="/auth" element={<AuthPage redirectAfterAuth="/dashboard" />} />
+                <Route path="/dashboard" element={gate(<Dashboard />)} />
+                <Route path="/me" element={gate(<MyWorkspace />)} />
+                <Route path="/live" element={gate(<LiveAttendance />)} />
+                <Route path="/employees" element={gate(<Employees />)} />
+                <Route path="/employees/:id" element={gate(<EmployeeDetail />)} />
+                <Route path="/attendance-admin" element={gate(<AttendanceAdmin />)} />
+                <Route path="/leave-admin" element={gate(<LeaveAdmin />)} />
+                <Route path="/corrections" element={gate(<Corrections />)} />
+                <Route path="/devices" element={gate(<Devices />)} />
+                <Route path="/qr" element={gate(<QrDisplays />)} />
+                <Route path="/kiosk" element={gate(<Kiosk />)} />
+                <Route path="/analytics" element={gate(<Analytics />)} />
+                <Route path="/reports" element={gate(<Reports />)} />
+                <Route path="/notifications" element={gate(<Notifications />)} />
+                <Route path="/audit" element={gate(<AuditLogs />)} />
+                <Route path="/settings" element={gate(<Settings />)} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+        ) : (
+          <MissingCredsNotice />
+        )}
         <Toaster />
-      </ConvexAuthProvider>
+      </SupabaseAuthProvider>
     </RootErrorBoundary>
   </StrictMode>,
 )

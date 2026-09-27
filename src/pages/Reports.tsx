@@ -1,4 +1,3 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/glass";
 import { Button } from "@/components/ui/button";
@@ -6,24 +5,25 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { useQuery } from "convex/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { FileDown, FileSpreadsheet, FileText, FileText as FileIcon } from "lucide-react";
+import { FileDown, FileSpreadsheet, FileText } from "lucide-react";
+import { supabase } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 type Row = {
-  employeeId: string;
+  employee_id: string;
   name: string;
   code: string;
   department: string;
-  presentDays: number;
-  lateDays: number;
-  halfDays: number;
-  absentDays: number;
-  leaveDays: number;
-  workedHours: number;
-  overtimeHours: number;
-  lateMinutes: number;
+  present_days: number;
+  late_days: number;
+  half_days: number;
+  absent_days: number;
+  leave_days: number;
+  worked_hours: number;
+  overtime_hours: number;
+  late_minutes: number;
 };
 
 function shiftDays(days: number) {
@@ -33,25 +33,44 @@ function shiftDays(days: number) {
 }
 
 export default function Reports() {
+  const { ws } = useWorkspace();
   const [from, setFrom] = useState(shiftDays(-29));
   const [to, setTo] = useState(shiftDays(0));
   const [dept, setDept] = useState("all");
   const [q, setQ] = useState("");
-  const [sortKey, setSortKey] = useState("name");
+  const [departments, setDepartments] = useState<Array<{ id: string; name: string }>>([]);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const departments = useQuery(api.employees.listDepartments, {});
-  const data = useQuery(api.analytics.range, {
-    from,
-    to,
-    departmentId: dept !== "all" ? (dept as any) : undefined,
-  });
+  useEffect(() => {
+    if (!ws) return;
+    supabase.from("departments").select("id, name").eq("company_id", ws.employee.company_id).order("name")
+      .then(({ data }) => setDepartments((data ?? []) as Array<{ id: string; name: string }>));
+  }, [ws]);
 
-  const rows: Row[] = useMemoRows(data, q, sortKey);
+  useEffect(() => {
+    if (!ws || !from || !to) return;
+    setLoading(true);
+    (async () => {
+      const { data: v, error } = await supabase.rpc("analytics_range", {
+        p_from: from, p_to: to, p_department: dept === "all" ? null : dept,
+      });
+      if (!error && v) {
+        const d = v as unknown as { perEmployee: Row[] };
+        setRows(d.perEmployee ?? []);
+      }
+      setLoading(false);
+    })();
+  }, [ws, from, to, dept]);
+
+  const shown = rows
+    .filter((r) => !q.trim() || r.name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const exportCsv = () => {
     const header = ["Employee", "Code", "Department", "Present", "Late", "Half-day", "Absent", "Leave", "Hours", "Overtime h", "Late min"];
-    const lines = rows.map((r) =>
-      [r.name, r.code, r.department, r.presentDays, r.lateDays, r.halfDays, Math.round(r.absentDays), r.leaveDays, r.workedHours, r.overtimeHours, r.lateMinutes].join(","),
+    const lines = shown.map((r) =>
+      [r.name, r.code, r.department, r.present_days, r.late_days, r.half_days, Math.round(r.absent_days), r.leave_days, r.worked_hours, r.overtime_hours, r.late_minutes].join(","),
     );
     download([header.join(","), ...lines].join("\n"), `officeflow-attendance-${from}_${to}.csv`, "text/csv");
     toast.success("CSV exported");
@@ -59,10 +78,8 @@ export default function Reports() {
 
   const exportXls = () => {
     const header = "<tr><th>Employee</th><th>Code</th><th>Department</th><th>Present</th><th>Late</th><th>Half-day</th><th>Absent</th><th>Leave</th><th>Hours</th><th>Overtime h</th><th>Late min</th></tr>";
-    const body = rows
-      .map((r) =>
-        `<tr><td>${r.name}</td><td>${r.code}</td><td>${r.department}</td><td>${r.presentDays}</td><td>${r.lateDays}</td><td>${r.halfDays}</td><td>${Math.round(r.absentDays)}</td><td>${r.leaveDays}</td><td>${r.workedHours}</td><td>${r.overtimeHours}</td><td>${r.lateMinutes}</td></tr>`,
-      )
+    const body = shown
+      .map((r) => `<tr><td>${r.name}</td><td>${r.code}</td><td>${r.department}</td><td>${r.present_days}</td><td>${r.late_days}</td><td>${r.half_days}</td><td>${Math.round(r.absent_days)}</td><td>${r.leave_days}</td><td>${r.worked_hours}</td><td>${r.overtime_hours}</td><td>${r.late_minutes}</td></tr>`)
       .join("");
     const html = `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8" /></head><body><table border="1">${header}${body}</table></body></html>`;
     download(html, `officeflow-attendance-${from}_${to}.xls`, "application/vnd.ms-excel");
@@ -71,10 +88,8 @@ export default function Reports() {
 
   const exportPdf = () => {
     const header = "<tr><th>Employee</th><th>Code</th><th>Dept</th><th>Present</th><th>Late</th><th>Hours</th><th>OT</th></tr>";
-    const body = rows
-      .map((r) =>
-        `<tr><td>${r.name}</td><td>${r.code}</td><td>${r.department}</td><td>${r.presentDays}</td><td>${r.lateDays}</td><td>${r.workedHours}</td><td>${r.overtimeHours}</td></tr>`,
-      )
+    const body = shown
+      .map((r) => `<tr><td>${r.name}</td><td>${r.code}</td><td>${r.department}</td><td>${r.present_days}</td><td>${r.late_days}</td><td>${r.worked_hours}</td><td>${r.overtime_hours}</td></tr>`)
       .join("");
     const win = window.open("", "_blank");
     if (!win) {
@@ -126,13 +141,13 @@ export default function Reports() {
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All departments</SelectItem>
-            {(departments ?? []).map((d) => <SelectItem key={d._id} value={d._id}>{d.name}</SelectItem>)}
+            {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Input placeholder="Search employee…" value={q} onChange={(e) => setQ(e.target.value)} />
       </GlassCard>
 
-      {!data ? (
+      {loading ? (
         <GlassCard className="p-10 text-center text-sm text-muted-foreground">Loading…</GlassCard>
       ) : (
         <GlassCard className="overflow-x-auto p-2">
@@ -151,46 +166,31 @@ export default function Reports() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.employeeId} className="border-b border-white/30 last:border-0">
+              {shown.map((r) => (
+                <tr key={r.employee_id} className="border-b border-white/30 last:border-0">
                   <td className="px-3 py-2.5">
                     <p className="font-medium">{r.name}</p>
                     <p className="text-[11px] text-muted-foreground">{r.code}</p>
                   </td>
                   <td className="px-3 py-2.5 text-muted-foreground">{r.department}</td>
-                  <td className="px-3 py-2.5">{r.presentDays}</td>
-                  <td className="px-3 py-2.5">{r.lateDays}</td>
-                  <td className="px-3 py-2.5">{r.halfDays}</td>
-                  <td className="px-3 py-2.5">{Math.round(r.absentDays)}</td>
-                  <td className="px-3 py-2.5">{r.leaveDays}</td>
-                  <td className="px-3 py-2.5 font-medium">{r.workedHours}</td>
-                  <td className="px-3 py-2.5">{r.overtimeHours || "—"}</td>
+                  <td className="px-3 py-2.5">{r.present_days}</td>
+                  <td className="px-3 py-2.5">{r.late_days}</td>
+                  <td className="px-3 py-2.5">{r.half_days}</td>
+                  <td className="px-3 py-2.5">{Math.round(r.absent_days)}</td>
+                  <td className="px-3 py-2.5">{r.leave_days}</td>
+                  <td className="px-3 py-2.5 font-medium">{r.worked_hours}</td>
+                  <td className="px-3 py-2.5">{r.overtime_hours || "—"}</td>
                 </tr>
               ))}
-              {rows.length === 0 && (
+              {shown.length === 0 && (
                 <tr><td colSpan={9} className="px-3 py-10 text-center text-muted-foreground">No data in range.</td></tr>
               )}
             </tbody>
           </table>
         </GlassCard>
       )}
-
-      <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <FileIcon className="size-3.5" /> Exports reflect the current filters. Absent days are estimated against expected work days minus recorded sessions.
-      </p>
     </AppShell>
   );
-}
-
-function useMemoRows(data: any, q: string, sortKey: string): Row[] {
-  if (!data?.perEmployee) return [];
-  let rows: Row[] = data.perEmployee;
-  if (q.trim()) rows = rows.filter((r: Row) => r.name.toLowerCase().includes(q.toLowerCase()));
-  rows = [...rows].sort((a, b) => {
-    if (sortKey === "name") return a.name.localeCompare(b.name);
-    return (b as any)[sortKey] - (a as any)[sortKey];
-  });
-  return rows;
 }
 
 function download(content: string, filename: string, mime: string) {

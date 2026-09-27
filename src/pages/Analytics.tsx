@@ -1,4 +1,3 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader } from "@/components/glass";
 import { Input } from "@/components/ui/input";
@@ -9,12 +8,12 @@ import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, BarChart, Bar, Legend,
 } from "recharts";
-import { useQuery } from "convex/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  RefreshCw, Gauge, Timer, Clock3, Flame, CalendarX2, ArrowDownRight,
-  Sunset, Plane,
+  RefreshCw, Gauge, Timer, Clock3, Flame, Sunset, ArrowDownRight, Plane,
 } from "lucide-react";
+import { supabase, type RangeData } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 const tooltipStyle = {
   borderRadius: 12,
@@ -37,34 +36,58 @@ const PRESETS = [
 ];
 
 export default function Analytics() {
+  const { ws } = useWorkspace();
   const [preset, setPreset] = useState("30");
   const [from, setFrom] = useState(PRESETS[0].from);
   const [to, setTo] = useState(PRESETS[0].to);
   const [dept, setDept] = useState("all");
   const [branch, setBranch] = useState("all");
   const [emp, setEmp] = useState("all");
+  const [departments, setDepartments] = useState<Array<{ id: string; name: string }>>([]);
+  const [branches, setBranches] = useState<Array<{ id: string; name: string }>>([]);
+  const [employees, setEmployees] = useState<Array<{ id: string; name: string }>>([]);
+  const [data, setData] = useState<RangeData | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const departments = useQuery(api.employees.listDepartments, {});
-  const branches = useQuery(api.employees.listBranches, {});
-  const employees = useQuery(api.employees.list, {});
+  useEffect(() => {
+    if (!ws) return;
+    const cid = ws.employee.company_id;
+    (async () => {
+      const [d, b, e] = await Promise.all([
+        supabase.from("departments").select("id, name").eq("company_id", cid).order("name"),
+        supabase.from("branches").select("id, name").eq("company_id", cid).order("name"),
+        supabase.from("employees").select("id, name").eq("company_id", cid).eq("active", true).order("name"),
+      ]);
+      setDepartments((d.data ?? []) as Array<{ id: string; name: string }>);
+      setBranches((b.data ?? []) as Array<{ id: string; name: string }>);
+      setEmployees((e.data ?? []) as Array<{ id: string; name: string }>);
+    })();
+  }, [ws]);
 
   const activePreset = PRESETS.find((p) => p.id === preset);
   const fromD = preset === "custom" ? from : activePreset?.from ?? from;
   const toD = preset === "custom" ? to : activePreset?.to ?? to;
 
-  const data = useQuery(api.analytics.range, {
-    from: fromD,
-    to: toD,
-    departmentId: dept !== "all" ? (dept as any) : undefined,
-    branchId: branch !== "all" ? (branch as any) : undefined,
-    employeeId: emp !== "all" ? (emp as any) : undefined,
-  });
+  useEffect(() => {
+    if (!ws || !fromD || !toD) return;
+    setLoading(true);
+    (async () => {
+      const { data: v, error } = await supabase.rpc("analytics_range", {
+        p_from: fromD,
+        p_to: toD,
+        p_department: dept === "all" ? null : dept,
+        p_branch: branch === "all" ? null : branch,
+        p_employee: emp === "all" ? null : emp,
+      });
+      if (!error && v) setData(v as unknown as RangeData);
+      setLoading(false);
+    })();
+  }, [ws, fromD, toD, dept, branch, emp]);
 
   const trend = useMemo(
     () => (data ? data.daily.map((d) => ({ ...d, label: d.day.slice(5) })) : []),
     [data],
   );
-
   const metrics = data?.totals;
 
   return (
@@ -74,7 +97,7 @@ export default function Analytics() {
         subtitle="Attendance health across any period, department or branch."
       />
 
-      <GlassCard className="mb-4 grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-6">
+      <GlassCard className="mb-4 grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-5">
         <Select value={preset} onValueChange={(v) => {
           setPreset(v);
           const p = PRESETS.find((x) => x.id === v);
@@ -82,9 +105,7 @@ export default function Analytics() {
         }}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
-            {PRESETS.map((p) => (
-              <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
-            ))}
+            {PRESETS.map((p) => <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>)}
           </SelectContent>
         </Select>
         {preset === "custom" && (
@@ -97,34 +118,31 @@ export default function Analytics() {
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All departments</SelectItem>
-            {(departments ?? []).map((d) => <SelectItem key={d._id} value={d._id}>{d.name}</SelectItem>)}
+            {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={branch} onValueChange={setBranch}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All branches</SelectItem>
-            {(branches ?? []).map((b) => <SelectItem key={b._id} value={b._id}>{b.name}</SelectItem>)}
+            {branches.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Select value={emp} onValueChange={setEmp} disabled={!employees}>
+        <Select value={emp} onValueChange={setEmp}>
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All employees</SelectItem>
-            {(employees ?? []).slice(0, 100).map((e) => (
-              <SelectItem key={e._id} value={e._id}>{e.name}</SelectItem>
-            ))}
+            {employees.slice(0, 100).map((e) => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
           </SelectContent>
         </Select>
       </GlassCard>
 
-      {!data ? (
+      {loading || !data ? (
         <GlassCard className="p-10 text-center text-sm text-muted-foreground">
           <RefreshCw className="mx-auto mb-2 size-5 animate-spin" /> Loading analytics…
         </GlassCard>
       ) : (
         <>
-          {/* metric tiles */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Metric icon={Gauge} label="Attendance rate" value={`${metrics!.attendanceRate}%`} tone="text-primary" />
             <Metric icon={Timer} label="Punctuality rate" value={`${metrics!.punctualityRate}%`} tone="text-emerald-600" />
@@ -136,7 +154,6 @@ export default function Analytics() {
             <Metric icon={Plane} label="Leave days" value={metrics!.leaveDays} tone="text-sky-600" />
           </div>
 
-          {/* charts */}
           <div className="mt-6 grid gap-4 lg:grid-cols-2">
             <GlassCard className="p-5">
               <h3 className="mb-4 font-semibold">Daily attendance</h3>
@@ -163,7 +180,7 @@ export default function Analytics() {
             </GlassCard>
 
             <GlassCard className="p-5">
-              <h3 className="mb-4 font-semibold">Worked hours by day</h3>
+              <h3 className="mb-4 font-semibold">Worked hours by employee</h3>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={data.perEmployee.slice(0, 12)}>
@@ -171,7 +188,7 @@ export default function Analytics() {
                     <XAxis dataKey="name" tick={false} axisLine={false} />
                     <YAxis tickLine={false} axisLine={false} fontSize={11} width={26} />
                     <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [`${v}h`, "Worked"]} />
-                    <Bar dataKey="workedHours" fill="#6366f1" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="worked_hours" fill="#6366f1" radius={[6, 6, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -179,7 +196,6 @@ export default function Analytics() {
             </GlassCard>
           </div>
 
-          {/* per-employee table */}
           <GlassCard className="mt-4 overflow-x-auto p-2">
             <table className="w-full text-sm">
               <thead>
@@ -197,19 +213,19 @@ export default function Analytics() {
               </thead>
               <tbody>
                 {data.perEmployee.map((r) => (
-                  <tr key={r.employeeId} className="border-b border-white/30 last:border-0">
+                  <tr key={r.employee_id} className="border-b border-white/30 last:border-0">
                     <td className="px-3 py-2.5">
                       <p className="font-medium">{r.name}</p>
                       <p className="text-[11px] text-muted-foreground">{r.code}</p>
                     </td>
                     <td className="px-3 py-2.5 text-muted-foreground">{r.department}</td>
-                    <td className="px-3 py-2.5">{r.presentDays}</td>
-                    <td className="px-3 py-2.5">{r.lateDays}</td>
-                    <td className="px-3 py-2.5">{r.halfDays}</td>
-                    <td className="px-3 py-2.5">{r.leaveDays}</td>
-                    <td className="px-3 py-2.5 font-medium">{r.workedHours}</td>
-                    <td className="px-3 py-2.5">{r.overtimeHours || "—"}</td>
-                    <td className="px-3 py-2.5">{r.lateMinutes || "—"}</td>
+                    <td className="px-3 py-2.5">{r.present_days}</td>
+                    <td className="px-3 py-2.5">{r.late_days}</td>
+                    <td className="px-3 py-2.5">{r.half_days}</td>
+                    <td className="px-3 py-2.5">{r.leave_days}</td>
+                    <td className="px-3 py-2.5 font-medium">{r.worked_hours}</td>
+                    <td className="px-3 py-2.5">{r.overtime_hours || "—"}</td>
+                    <td className="px-3 py-2.5">{r.late_minutes || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -221,14 +237,9 @@ export default function Analytics() {
   );
 }
 
-function Metric({
-  icon: Icon, label, value, tone = "", hint,
-}: {
+function Metric({ icon: Icon, label, value, tone = "", hint }: {
   icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: React.ReactNode;
-  tone?: string;
-  hint?: string;
+  label: string; value: React.ReactNode; tone?: string; hint?: string;
 }) {
   return (
     <GlassCard className="p-4">

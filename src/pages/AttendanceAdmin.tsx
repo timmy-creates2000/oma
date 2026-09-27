@@ -1,4 +1,3 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty } from "@/components/glass";
 import { Badge } from "@/components/ui/badge";
@@ -6,13 +5,21 @@ import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { useQuery } from "convex/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ClipboardList, AlertTriangle } from "lucide-react";
+import { supabase, fmtTime } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
-function fmtTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-}
+type Row = {
+  id: string;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  worked_minutes: number | null;
+  late_minutes: number;
+  overtime_minutes: number;
+  status: string;
+  employees: { name: string; employee_code: string } | null;
+};
 
 const STATUS_META: Record<string, string> = {
   present: "bg-emerald-500/15 text-emerald-700",
@@ -26,9 +33,28 @@ const STATUS_META: Record<string, string> = {
 };
 
 export default function AttendanceAdmin() {
+  const { ws } = useWorkspace();
   const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
   const [status, setStatus] = useState("all");
-  const sessions = useQuery(api.attendance.adminListSessions, { day, status: status === "all" ? undefined : status });
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!ws) return;
+    setLoading(true);
+    (async () => {
+      let query = supabase
+        .from("attendance_sessions")
+        .select("id, clock_in_at, clock_out_at, worked_minutes, late_minutes, overtime_minutes, status, employees(name, employee_code)")
+        .eq("company_id", ws.employee.company_id)
+        .eq("day_key", day)
+        .order("clock_in_at", { ascending: false });
+      if (status !== "all") query = query.eq("status", status);
+      const { data } = await query;
+      setRows((data ?? []) as unknown as Row[]);
+      setLoading(false);
+    })();
+  }, [ws, day, status]);
 
   return (
     <AppShell title="Attendance">
@@ -43,23 +69,23 @@ export default function AttendanceAdmin() {
           <SelectTrigger className="sm:w-44"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
-            {Object.entries(STATUS_META).map(([k]) => (
+            {Object.keys(STATUS_META).map((k) => (
               <SelectItem key={k} value={k}>{k.replace("_", " ")}</SelectItem>
             ))}
           </SelectContent>
         </Select>
       </GlassCard>
 
-      {!sessions ? (
+      {loading ? (
         <GlassCard className="p-10 text-center text-sm text-muted-foreground">Loading…</GlassCard>
-      ) : sessions.length === 0 ? (
+      ) : rows.length === 0 ? (
         <GlassCard className="p-5">
           <Empty icon={ClipboardList} text="No sessions for this day / filter." />
         </GlassCard>
       ) : (
         <>
-          {sessions.some(({ session }) => !session.clockOutAt && session.status !== "on_leave") && (
-            <GlassCard className="mb-4 flex items-start gap-2.5 border-amber-300/60 p-4 text-sm">
+          {rows.some((r) => !r.clock_out_at && r.status !== "on_leave") && (
+            <GlassCard className="mb-4 flex items-start gap-2.5 p-4 text-sm">
               <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
               <span>
                 Rows marked <b>working…</b> have an open session. The auto clock-out sweep closes sessions
@@ -81,26 +107,26 @@ export default function AttendanceAdmin() {
                 </tr>
               </thead>
               <tbody>
-                {sessions.map(({ session, employee }) => (
-                  <tr key={session._id} className="border-b border-white/30 last:border-0">
+                {rows.map((r) => (
+                  <tr key={r.id} className="border-b border-white/30 last:border-0">
                     <td className="px-3 py-3">
-                      <p className="font-medium">{employee?.name ?? "Unknown"}</p>
-                      <p className="text-[11px] text-muted-foreground">{employee?.employeeCode}</p>
+                      <p className="font-medium">{r.employees?.name ?? "Unknown"}</p>
+                      <p className="text-[11px] text-muted-foreground">{r.employees?.employee_code}</p>
                     </td>
-                    <td className="px-3 py-3 tabular-nums">{fmtTime(session.clockInAt)}</td>
+                    <td className="px-3 py-3 tabular-nums">{fmtTime(r.clock_in_at)}</td>
                     <td className="px-3 py-3 tabular-nums">
-                      {session.clockOutAt ? fmtTime(session.clockOutAt) : <span className="text-sky-600">working…</span>}
+                      {r.clock_out_at ? fmtTime(r.clock_out_at) : <span className="text-sky-600">working…</span>}
                     </td>
-                    <td className="px-3 py-3">{session.workedMinutes != null ? `${(session.workedMinutes / 60).toFixed(1)}h` : "—"}</td>
+                    <td className="px-3 py-3">{r.worked_minutes != null ? `${(r.worked_minutes / 60).toFixed(1)}h` : "—"}</td>
                     <td className="px-3 py-3">
-                      {session.lateMinutes > 0 ? <span className="text-amber-700">+{session.lateMinutes}m</span> : "—"}
-                    </td>
-                    <td className="px-3 py-3">
-                      {session.overtimeMinutes > 0 ? <span className="text-emerald-700">+{session.overtimeMinutes}m</span> : "—"}
+                      {r.late_minutes > 0 ? <span className="text-amber-700">+{r.late_minutes}m</span> : "—"}
                     </td>
                     <td className="px-3 py-3">
-                      <Badge variant="secondary" className={STATUS_META[session.status] ?? ""}>
-                        {session.status.replace("_", " ")}
+                      {r.overtime_minutes > 0 ? <span className="text-emerald-700">+{r.overtime_minutes}m</span> : "—"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant="secondary" className={STATUS_META[r.status] ?? ""}>
+                        {r.status.replace("_", " ")}
                       </Badge>
                     </td>
                   </tr>

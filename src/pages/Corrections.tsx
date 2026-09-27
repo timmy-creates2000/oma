@@ -1,32 +1,59 @@
-import { api } from "@/convex/_generated/api";
 import { AppShell } from "@/components/AppShell";
 import { GlassCard, PageHeader, Empty } from "@/components/glass";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useQuery, useMutation } from "convex/react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { TimerReset, Check, X } from "lucide-react";
+import { supabase, fmtTime, err } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
 
-function fmtTime(ts?: number) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-}
+type Row = {
+  id: string;
+  session_date: string;
+  requested_clock_in_at: string | null;
+  requested_clock_out_at: string | null;
+  reason: string;
+  status: string;
+  reviewer_note: string | null;
+  employees: { name: string } | null;
+};
 
 export default function Corrections() {
-  const corrections = useQuery(api.attendance.listCorrections, {});
-  const decide = useMutation(api.attendance.decideCorrection);
+  const { ws } = useWorkspace();
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const pending = (corrections ?? []).filter((c) => c.request.status === "pending");
-  const history = (corrections ?? []).filter((c) => c.request.status !== "pending");
+  const load = async () => {
+    if (!ws) return;
+    setLoading(true);
+    const { data } = await supabase
+      .from("correction_requests")
+      .select("id, session_date, requested_clock_in_at, requested_clock_out_at, reason, status, reviewer_note, employees(name)")
+      .eq("company_id", ws.employee.company_id)
+      .order("created_at", { ascending: false });
+    setRows((data ?? []) as unknown as Row[]);
+    setLoading(false);
+  };
 
-  const handle = async (id: any, ok: boolean) => {
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws]);
+
+  const handle = async (id: string, ok: boolean) => {
     try {
-      await decide({ id, approve: ok });
+      const { error } = await supabase.rpc("decide_correction", { p_request: id, p_approve: ok });
+      if (error) throw error;
       toast.success(ok ? "Correction approved — session updated" : "Correction rejected");
+      load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed");
+      toast.error(err(e));
     }
   };
+
+  const pending = rows.filter((r) => r.status === "pending");
+  const history = rows.filter((r) => r.status !== "pending");
 
   return (
     <AppShell title="Corrections">
@@ -38,30 +65,30 @@ export default function Corrections() {
       <div className="grid gap-4 lg:grid-cols-2">
         <GlassCard className="p-5">
           <h3 className="mb-3 font-semibold">Pending {pending.length > 0 && `(${pending.length})`}</h3>
-          {!corrections ? (
+          {loading ? (
             <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
           ) : pending.length === 0 ? (
             <Empty icon={TimerReset} text="No pending corrections." />
           ) : (
             <div className="space-y-3">
-              {pending.map(({ request, employee }) => (
-                <div key={request._id} className="glass-soft rounded-xl p-4">
+              {pending.map((r) => (
+                <div key={r.id} className="glass-soft rounded-xl p-4">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="text-sm font-semibold">{employee?.name ?? "Unknown"}</p>
+                      <p className="text-sm font-semibold">{r.employees?.name ?? "Unknown"}</p>
                       <p className="text-xs text-muted-foreground">
-                        {request.sessionDate}
-                        {request.requestedClockInAt ? ` · in ${fmtTime(request.requestedClockInAt)}` : ""}
-                        {request.requestedClockOutAt ? ` · out ${fmtTime(request.requestedClockOutAt)}` : ""}
+                        {r.session_date}
+                        {r.requested_clock_in_at ? ` · in ${fmtTime(r.requested_clock_in_at)}` : ""}
+                        {r.requested_clock_out_at ? ` · out ${fmtTime(r.requested_clock_out_at)}` : ""}
                       </p>
                     </div>
                   </div>
-                  <p className="mt-2 text-sm text-muted-foreground">“{request.reason}”</p>
+                  <p className="mt-2 text-sm text-muted-foreground">“{r.reason}”</p>
                   <div className="mt-3 flex gap-2">
-                    <Button size="sm" className="h-8" onClick={() => handle(request._id, true)}>
+                    <Button size="sm" className="h-8" onClick={() => handle(r.id, true)}>
                       <Check className="size-4" /> Approve
                     </Button>
-                    <Button size="sm" variant="outline" className="glass h-8 text-destructive" onClick={() => handle(request._id, false)}>
+                    <Button size="sm" variant="outline" className="glass h-8 text-destructive" onClick={() => handle(r.id, false)}>
                       <X className="size-4" /> Reject
                     </Button>
                   </div>
@@ -77,19 +104,14 @@ export default function Corrections() {
             <Empty icon={TimerReset} text="No reviewed corrections yet." />
           ) : (
             <div className="space-y-2">
-              {history.map(({ request, employee }) => (
-                <div key={request._id} className="glass-soft flex items-center justify-between rounded-xl px-4 py-3">
+              {history.map((r) => (
+                <div key={r.id} className="glass-soft flex items-center justify-between rounded-xl px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium">{employee?.name ?? "Unknown"} · {request.sessionDate}</p>
-                    {request.reviewerNote && (
-                      <p className="text-xs italic text-muted-foreground">“{request.reviewerNote}”</p>
-                    )}
+                    <p className="text-sm font-medium">{r.employees?.name ?? "Unknown"} · {r.session_date}</p>
+                    {r.reviewer_note && <p className="text-xs italic text-muted-foreground">“{r.reviewer_note}”</p>}
                   </div>
-                  <Badge
-                    variant="secondary"
-                    className={request.status === "approved" ? "bg-emerald-500/15 text-emerald-700" : "bg-rose-500/15 text-rose-700"}
-                  >
-                    {request.status}
+                  <Badge variant="secondary" className={r.status === "approved" ? "bg-emerald-500/15 text-emerald-700" : "bg-rose-500/15 text-rose-700"}>
+                    {r.status}
                   </Badge>
                 </div>
               ))}
