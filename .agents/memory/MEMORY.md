@@ -1,0 +1,1 @@
+- [Supabase integration boundary](supabase-integration-boundary.md) — the connected Supabase proxy is server-side; business RPC migrations must exist in the live project before app workflows work.

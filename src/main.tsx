@@ -1,13 +1,11 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
-import { ConvexAuthProvider } from "@convex-dev/auth/react";
-import { ConvexProvider } from "convex/react";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import "./index.css";
-import { convex } from "@/lib/convex";
+import { SupabaseAuthProvider } from "@/hooks/use-supabase-auth";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
@@ -139,8 +137,7 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
-      <ConvexProvider client={convex}>
-        <ConvexAuthProvider client={convex}>
+      <SupabaseAuthProvider>
           <BrowserRouter>
             <RouteSyncer />
             <Suspense fallback={<RouteLoading />}>
@@ -168,8 +165,7 @@ createRoot(document.getElementById("root")!).render(
             </Suspense>
           </BrowserRouter>
           <Toaster />
-        </ConvexAuthProvider>
-      </ConvexProvider>
+      </SupabaseAuthProvider>
     </RootErrorBoundary>
   </StrictMode>,
 )

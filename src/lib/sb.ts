@@ -3,13 +3,17 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
-export const hasSupabaseCreds = !!(url && key);
+const proxyUrl = typeof window !== "undefined"
+  ? `${window.location.origin}/api/supabase`
+  : "http://localhost/api/supabase";
+
+export const hasSupabaseCreds = true;
 
 // Untyped client: row types are declared and cast in this module instead,
 // which keeps RPC args and embedded-resource selects flexible.
 export const supabase = createClient(
-  url ?? "https://placeholder.supabase.co",
-  key ?? "public-anon-key",
+  url ?? proxyUrl,
+  key ?? "replit-supabase-proxy",
   {
     auth: {
       persistSession: true,
@@ -181,10 +185,11 @@ export type DashboardData = {
     ongoing: number;
     absent: number;
     missing_out: number;
+    missing_devices: number;
   };
   trend: Array<{ day: string; present: number; late: number; absent: number }>;
   deptRows: Array<{ name: string; total: number; present: number; late: number; absent: number } | null>;
-  recentEvents: Array<{ id: string; kind: string; at: string; day_key: string; employee_name: string } | null>;
+  recentEvents: Array<{ id: string; kind: string; at: string; day_key: string; employee_name: string; employee_code: string }>;
   pendingLeave: number;
   pendingCorrections: number;
   myRole: string;

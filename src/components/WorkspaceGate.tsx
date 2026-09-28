@@ -1,7 +1,6 @@
-import { useQuery } from "convex/react";
 import { lazy, Suspense, type ReactNode } from "react";
-import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
+import { useWorkspace } from "@/hooks/use-workspace";
 
 const Onboarding = lazy(() => import("@/pages/Onboarding"));
 
@@ -18,10 +17,10 @@ function FullScreenSpinner() {
  * users with a workspace pass through to the requested page.
  */
 export function WorkspaceGate({ children }: { children: ReactNode }) {
-  const ws = useQuery(api.companies.myWorkspace);
+  const { ws, loading } = useWorkspace();
 
   // undefined = loading, an error means "signed in but not in a company yet".
-  if (ws === undefined) return <FullScreenSpinner />;
+  if (loading) return <FullScreenSpinner />;
 
   if (ws === null) {
     return (

@@ -2,7 +2,6 @@ import { AppShell, hasPerm } from "@/components/AppShell";
 import { GlassCard, StatTile, PageHeader } from "@/components/glass";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useMutation, useQuery } from "convex/react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar,
 } from "recharts";
@@ -12,10 +11,19 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useEffect } from "react";
-import { api, fmtTime } from "@/lib/api";
+import { fmtTime, type DashboardData } from "@/lib/sb";
+import { useWorkspace } from "@/hooks/use-workspace";
+import { supabase, err } from "@/lib/sb";
+import { useState } from "react";
+import { toast } from "sonner";
 
 const DAY_FMT = (d: string) =>
   new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
+
+function shiftDay(key: string, days: number) {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
 
 const tooltipStyle = {
   borderRadius: 12,
@@ -27,20 +35,107 @@ const tooltipStyle = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const dash = useQuery(api.analytics.dashboardData);
-  const today = useQuery(api.attendance.todayStatus);
-  const ws = useQuery(api.companies.myWorkspace);
-  const sweep = useMutation(api.attendance.autoClockoutSweep);
+  const { ws } = useWorkspace();
+  const [dash, setDash] = useState<DashboardData | null>(null);
+  const [today, setToday] = useState<{
+    clock_in_at: string;
+    clock_out_at: string | null;
+    late_minutes: number;
+    worked_minutes: number | null;
+  } | null>(null);
 
-  // Close anything left open past the company's auto clock-out limit.
   useEffect(() => {
-    if (!ws || !dash?.approvals?.isAdmin) return;
-    void sweep({}).catch(() => undefined);
-  }, [ws, dash?.approvals, sweep]);
+    if (!ws) return;
+    const workspace = ws;
+    let cancelled = false;
+    async function load() {
+      const companyId = workspace.employee.company_id;
+      const todayKey = new Date().toISOString().slice(0, 10);
+      const [employees, sessions, events, leave, corrections, devices, departments] = await Promise.all([
+        supabase.from("employees").select("id, name, employee_code, department_id").eq("company_id", companyId).eq("active", true),
+        supabase.from("attendance_sessions").select("*").eq("company_id", companyId).gte("day_key", shiftDay(todayKey, -6)).lte("day_key", todayKey),
+        supabase.from("attendance_events").select("id, kind, at, day_key, employee_id").eq("company_id", companyId).order("at", { ascending: false }).limit(12),
+        supabase.from("leave_requests").select("id").eq("company_id", companyId).eq("status", "pending"),
+        supabase.from("correction_requests").select("id").eq("company_id", companyId).eq("status", "pending"),
+        supabase.from("registered_devices").select("employee_id").eq("company_id", companyId).eq("status", "active"),
+        supabase.from("departments").select("id, name").eq("company_id", companyId),
+      ]);
+      const empRows = employees.data ?? [];
+      const sessionRows = sessions.data ?? [];
+      const todayRows = sessionRows.filter((s) => s.day_key === todayKey);
+      const byEmployee = new Map(empRows.map((e) => [e.id, e]));
+      const presentIds = new Set(todayRows.map((s) => s.employee_id));
+      const deviceOwnerIds = new Set((devices.data ?? []).map((d) => d.employee_id));
+      const eventRows = (events.data ?? []).map((event) => ({
+        id: event.id,
+        kind: event.kind,
+        at: event.at,
+        day_key: event.day_key,
+        employee_name: byEmployee.get(event.employee_id)?.name ?? "Employee",
+        employee_code: byEmployee.get(event.employee_id)?.employee_code ?? "",
+      }));
+      const trend = Array.from({ length: 7 }, (_, index) => {
+        const day = shiftDay(todayKey, index - 6);
+        const rows = sessionRows.filter((s) => s.day_key === day);
+        return {
+          day,
+          present: rows.filter((s) => ["present", "late"].includes(s.status)).length,
+          late: rows.filter((s) => s.status === "late").length,
+          absent: Math.max(0, empRows.length - rows.length),
+        };
+      });
+      const deptRows = (departments.data ?? []).map((dept) => {
+        const members = empRows.filter((e) => e.department_id === dept.id);
+        const rows = todayRows.filter((s) => members.some((m) => m.id === s.employee_id));
+        return {
+          name: dept.name,
+          total: members.length,
+          present: rows.filter((s) => ["present", "late"].includes(s.status)).length,
+          late: rows.filter((s) => s.status === "late").length,
+          absent: Math.max(0, members.length - rows.length),
+        };
+      });
+      const session = todayRows.find((s) => s.employee_id === workspace.employee.id) ?? null;
+      if (!cancelled) {
+        setToday(session ? {
+          clock_in_at: session.clock_in_at,
+          clock_out_at: session.clock_out_at,
+          late_minutes: session.late_minutes,
+          worked_minutes: session.worked_minutes,
+        } : null);
+        setDash({
+          counts: {
+            total_employees: empRows.length,
+            present: todayRows.filter((s) => ["present", "late"].includes(s.status)).length,
+            late: todayRows.filter((s) => s.status === "late").length,
+            half_day: todayRows.filter((s) => s.status === "half_day").length,
+            on_leave: 0,
+            ongoing: todayRows.filter((s) => !s.clock_out_at).length,
+            absent: Math.max(0, empRows.length - presentIds.size),
+            missing_out: todayRows.filter((s) => !s.clock_out_at).length,
+            missing_devices: Math.max(0, empRows.length - deviceOwnerIds.size),
+          },
+          trend,
+          deptRows,
+          recentEvents: eventRows,
+          pendingLeave: leave.data?.length ?? 0,
+          pendingCorrections: corrections.data?.length ?? 0,
+          myRole: workspace.employee.role,
+        });
+      }
+    }
+    load().catch((e) => toast.error(err(e)));
+    return () => { cancelled = true; };
+  }, [ws]);
 
   const myName = ws?.employee.name ?? "there";
-  const mySession = today?.session ?? null;
-  const approvals = dash?.approvals;
+  const mySession = today;
+  const approvals = dash ? {
+    leave: dash.pendingLeave,
+    corrections: dash.pendingCorrections,
+    devices: 0,
+    peopleWithoutDevice: dash.counts.missing_devices,
+  } : null;
 
   return (
     <AppShell title="Dashboard">
@@ -62,14 +157,14 @@ export default function Dashboard() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-medium text-muted-foreground">Your attendance today</p>
-                {mySession && mySession.clockOutAt === undefined ? (
+                {mySession && !mySession.clock_out_at ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Clocked in at {fmtTime(mySession.clockInAt)}
-                    {mySession.lateMinutes > 0 ? ` · ${mySession.lateMinutes}m late` : " · on time"}
+                    Clocked in at {fmtTime(mySession.clock_in_at)}
+                    {mySession.late_minutes > 0 ? ` · ${mySession.late_minutes}m late` : " · on time"}
                   </p>
                 ) : mySession ? (
                   <p className="mt-1 text-lg font-semibold">
-                    Done for today — {((mySession.workedMinutes ?? 0) / 60).toFixed(1)}h worked
+                    Done for today — {((mySession.worked_minutes ?? 0) / 60).toFixed(1)}h worked
                   </p>
                 ) : (
                   <p className="mt-1 text-lg font-semibold">Not clocked in yet — scan the office QR at the kiosk.</p>
@@ -88,12 +183,12 @@ export default function Dashboard() {
 
           {/* stats */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile icon={Users} label="Total employees" value={dash.headcount} />
-            <StatTile icon={UserCheck} label="Present today" value={dash.todaySummary.present} tone="text-emerald-600" />
-            <StatTile icon={Clock3} label="Late today" value={dash.todaySummary.late} tone="text-amber-600" />
-            <StatTile icon={TimerReset} label="Currently in office" value={dash.todaySummary.ongoing} tone="text-sky-600" />
-            <StatTile icon={Plane} label="On leave" value={dash.todaySummary.onLeave} tone="text-violet-600" />
-            <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.todaySummary.absent} tone="text-rose-600" />
+            <StatTile icon={Users} label="Total employees" value={dash.counts.total_employees} />
+            <StatTile icon={UserCheck} label="Present today" value={dash.counts.present} tone="text-emerald-600" />
+            <StatTile icon={Clock3} label="Late today" value={dash.counts.late} tone="text-amber-600" />
+            <StatTile icon={TimerReset} label="Currently in office" value={dash.counts.ongoing} tone="text-sky-600" />
+            <StatTile icon={Plane} label="On leave" value={dash.counts.on_leave} tone="text-violet-600" />
+            <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.counts.absent} tone="text-rose-600" />
             <StatTile
               icon={Fingerprint}
               label="People without a device"
@@ -165,10 +260,10 @@ export default function Dashboard() {
                 <h3 className="font-semibold">Recent attendance activity</h3>
               </div>
               <div className="space-y-2">
-                {dash.activity.length === 0 && (
+                 {dash.recentEvents.length === 0 && (
                   <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>
                 )}
-                {dash.activity.map((ev) => (
+                {dash.recentEvents.map((ev) => (
                   <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
                     <div className="flex items-center gap-2.5">
                       {ev.kind === "clock_out" ? (
@@ -177,13 +272,13 @@ export default function Dashboard() {
                         <LogIn className="size-3.5 text-emerald-500" />
                       )}
                       <div>
-                        <p className="text-sm font-medium">{ev.name}</p>
+                         <p className="text-sm font-medium">{ev.employee_name}</p>
                         <p className="text-[11px] text-muted-foreground">
-                          {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
+                           {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
                         </p>
                       </div>
                     </div>
-                    <span className="text-[11px] text-muted-foreground">{ev.employeeCode}</span>
+                     <span className="text-[11px] text-muted-foreground">{ev.employee_code}</span>
                   </div>
                 ))}
               </div>

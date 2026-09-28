@@ -1,4 +1,3 @@
-import { useMutation } from "convex/react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -7,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { GlassCard } from "@/components/glass";
 import { useSession } from "@/hooks/use-auth";
-import { api, err } from "@/lib/api";
+import { supabase, err } from "@/lib/sb";
 import {
   Building2, Sparkles, Users2, ArrowRight, Loader2, Clock, Mail,
 } from "lucide-react";
@@ -22,10 +21,6 @@ function toMinutes(time: string): number {
 export default function Onboarding() {
   const navigate = useNavigate();
   const { user, signOut } = useSession();
-  const createCompany = useMutation(api.companies.createCompany);
-  const seedDemo = useMutation(api.companies.seedDemo);
-  const joinCompany = useMutation(api.companies.joinCompany);
-
   const [mode, setMode] = useState<"create" | "demo" | "join">("create");
   const [companyName, setCompanyName] = useState("");
   const [industry, setIndustry] = useState("");
@@ -51,17 +46,17 @@ export default function Onboarding() {
 
     setBusy(true);
     try {
-      const { companyId } = await createCompany({
-        name: companyName.trim() || "Northwind Labs",
-        industry: industry.trim() || "Technology",
-        startMinute: toMinutes(start),
-        endMinute: toMinutes(end),
-        lateGraceMinutes: Number(grace) || 10,
-        workDays,
-        geoEnabled: false,
+      const { data: companyId, error } = await supabase.rpc("create_company", {
+        p_name: companyName.trim() || "Northwind Labs",
+        p_industry: industry.trim() || "Technology",
+        p_start: toMinutes(start),
+        p_end: toMinutes(end),
+        p_grace: Number(grace) || 10,
+        p_work_days: workDays,
       });
+      if (error) throw error;
       if (seed) {
-        await seedDemo({ companyId });
+        await seedDemoWorkspace(companyId);
         toast.success("Demo workspace ready!");
       } else {
         toast.success("Workspace created!");
@@ -78,7 +73,8 @@ export default function Onboarding() {
     if (!joinCode.trim()) return toast.error("Enter an invite code");
     setBusy(true);
     try {
-      await joinCompany({ slug: joinCode.trim() });
+      const { error } = await supabase.rpc("join_company", { p_code: joinCode.trim() });
+      if (error) throw error;
       toast.success("Welcome aboard!");
       navigate("/dashboard");
     } catch (e) {
@@ -231,4 +227,26 @@ export default function Onboarding() {
       </GlassCard>
     </div>
   );
+}
+
+async function seedDemoWorkspace(companyId: string | null) {
+  if (!companyId) return;
+  const departments = ["Engineering", "Operations", "People"];
+  const branches = ["Lagos HQ"];
+  for (const name of departments) {
+    await supabase.from("departments").insert({ company_id: companyId, name });
+  }
+  for (const name of branches) {
+    await supabase.from("branches").insert({ company_id: companyId, name });
+  }
+  const { data: leaveTypes } = await supabase
+    .from("leave_types")
+    .select("id")
+    .eq("company_id", companyId);
+  if (!leaveTypes?.length) {
+    await supabase.from("leave_types").insert([
+      { company_id: companyId, name: "Annual Leave", annual_quota_days: 20, paid: true },
+      { company_id: companyId, name: "Sick Leave", annual_quota_days: 10, paid: true },
+    ]);
+  }
 }

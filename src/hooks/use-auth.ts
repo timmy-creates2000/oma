@@ -1,21 +1,15 @@
-import { useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
-import { useQuery } from "convex/react";
-import { api } from "@/lib/api";
+import { useSupabaseAuth } from "./use-supabase-auth";
 
 /**
- * One hook for the whole app's auth state: Convex Auth owns the session, and
- * `me.currentUser` resolves the identity for display.
+ * One hook for the whole app's auth state backed by Supabase Auth.
  */
 export function useSession() {
-  const { isLoading, isAuthenticated } = useConvexAuth();
-  const user = useQuery(api.me.currentUser);
-  const { signIn, signOut } = useAuthActions();
+  const { loading, user, signOut } = useSupabaseAuth();
 
   return {
-    isLoading: isLoading || user === undefined,
-    isAuthenticated,
+    isLoading: loading,
+    isAuthenticated: !!user,
     user: user ?? null,
-    signIn,
     signOut,
   };
 }

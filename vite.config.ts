@@ -1,12 +1,75 @@
 import { vlyPlugin } from "@vly-ai/integrations";
+import { ReplitConnectors } from "@replit/connectors-sdk";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { defineConfig } from "vite";
+
+function readBody(req: IncomingMessage): Promise<string | undefined> {
+  return new Promise((resolve, reject) => {
+    if (req.method === "GET" || req.method === "HEAD") {
+      resolve(undefined);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8") || undefined));
+    req.on("error", reject);
+  });
+}
+
+function writeProxyResponse(res: ServerResponse, upstream: Response) {
+  res.statusCode = upstream.status;
+  upstream.headers.forEach((value, key) => {
+    if (!["content-encoding", "content-length", "transfer-encoding"].includes(key.toLowerCase())) {
+      res.setHeader(key, value);
+    }
+  });
+  upstream.arrayBuffer().then((body) => res.end(Buffer.from(body))).catch(() => {
+    if (!res.headersSent) res.statusCode = 502;
+    res.end("Supabase proxy response failed");
+  });
+}
+
+function supabaseProxyPlugin() {
+  const connectors = new ReplitConnectors();
+  return {
+    name: "officeflow-supabase-proxy",
+    configureServer(server: { middlewares: { use: (path: string, handler: (req: IncomingMessage & { url?: string }, res: ServerResponse) => void) => void } }) {
+      server.middlewares.use("/api/supabase", async (req, res) => {
+        try {
+          const requestUrl = new URL(req.url ?? "/", "http://localhost");
+          const path = `${requestUrl.pathname.replace(/^\/api\/supabase/, "") || "/"}${requestUrl.search}`;
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (value && !["host", "content-length", "apikey"].includes(key.toLowerCase())) {
+              headers[key] = Array.isArray(value) ? value.join(",") : value;
+            }
+          }
+          const body = await readBody(req);
+          const upstream = await connectors.proxy("supabase", path, {
+            method: req.method,
+            headers,
+            body,
+          });
+          writeProxyResponse(res, upstream);
+        } catch (error) {
+          console.error("[Supabase proxy]", error);
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.setHeader("content-type", "application/json");
+          }
+          res.end(JSON.stringify({ message: "Supabase connection unavailable" }));
+        }
+      });
+    },
+  };
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), vlyPlugin(), tailwindcss()],
+  plugins: [react(), vlyPlugin(), tailwindcss(), supabaseProxyPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

@@ -8,15 +8,15 @@ import {
 } from "@/components/ui/popover";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { GlassCard } from "@/components/glass";
-import { useMutation, useQuery } from "convex/react";
 import { useSession } from "@/hooks/use-auth";
-import { api } from "@/lib/api";
+import { useWorkspace } from "@/hooks/use-workspace";
+import { supabase, type Notification } from "@/lib/sb";
 import {
   LayoutDashboard, Radio, Users, Fingerprint, QrCode, CalendarDays,
   Wrench, BarChart3, FileText, Bell, ScrollText, Settings, ScanLine,
   LogOut, Building2, ClipboardCheck, Timer, CheckCheck,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router";
 
 const NAV: Array<{ to: string; label: string; icon: React.ComponentType<{ className?: string }>; perm?: string }> = [
@@ -36,7 +36,7 @@ const NAV: Array<{ to: string; label: string; icon: React.ComponentType<{ classN
   { to: "/settings", label: "Settings", icon: Settings, perm: "manage_settings" },
 ];
 
-/** Client-side mirror of ROLE_PERMS in convex/helpers.ts. */
+/** Client-side mirror of the permission matrix enforced by Supabase functions. */
 export function hasPerm(role: string | undefined, perm: string): boolean {
   const map: Record<string, string[]> = {
     company_admin: [
@@ -57,16 +57,24 @@ export function hasPerm(role: string | undefined, perm: string): boolean {
 export function AppShell({ children, title }: { children: ReactNode; title?: string }) {
   const { user, signOut } = useSession();
   const location = useLocation();
-  const ws = useQuery(api.companies.myWorkspace);
-  const inbox = useQuery(api.notifications.listNotifications);
-  const markAllRead = useMutation(api.notifications.markNotificationsRead);
+  const { ws } = useWorkspace();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
 
   const role = ws?.employee.role ?? "employee";
   const visibleNav = NAV.filter((item) => !item.perm || hasPerm(role, item.perm));
-  const notifications = inbox?.notifications ?? [];
-  const unread = inbox?.unreadCount ?? 0;
+  const unread = notifications.filter((n) => !n.read_at).length;
+
+  useEffect(() => {
+    if (!ws) return;
+    supabase.from("notifications")
+      .select("*")
+      .eq("company_id", ws.employee.company_id)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then(({ data }) => setNotifications((data ?? []) as Notification[]));
+  }, [ws]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -182,7 +190,10 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                       variant="link"
                       size="sm"
                       className="h-auto p-0 text-xs"
-                      onClick={() => markAllRead({})}
+                       onClick={async () => {
+                         await supabase.rpc("mark_notifications_read", { p_all: true });
+                         setNotifications((items) => items.map((n) => ({ ...n, read_at: new Date().toISOString() })));
+                       }}
                     >
                       <CheckCheck className="mr-1 size-3.5" /> Mark all read
                     </Button>
@@ -192,9 +203,9 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                       <p className="px-4 py-8 text-center text-sm text-muted-foreground">You&rsquo;re all caught up.</p>
                     )}
                     {notifications.slice(0, 8).map((n) => (
-                      <div key={n._id} className={`border-b px-4 py-3 last:border-0 ${n.readAt ? "opacity-55" : ""}`}>
+                     <div key={n.id} className={`border-b px-4 py-3 last:border-0 ${n.read_at ? "opacity-55" : ""}`}>
                         <p className="text-xs font-semibold">{n.title}</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>
+                         <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>
                       </div>
                     ))}
                   </div>

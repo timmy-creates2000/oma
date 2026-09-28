@@ -6,7 +6,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSession } from "@/hooks/use-auth";
-import { err } from "@/lib/api";
+import { supabase } from "@/lib/sb";
+import { err } from "@/lib/sb";
 import { ArrowRight, Loader2, Lock, Mail, ScanLine, UserPlus } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
@@ -23,7 +24,7 @@ function resolveRedirectAfterAuth(returnTo: string | null, fallback = "/dashboar
 }
 
 function Auth({ redirectAfterAuth }: AuthProps = {}) {
-  const { isAuthenticated, signIn } = useSession();
+  const { isAuthenticated } = useSession();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirect = resolveRedirectAfterAuth(
@@ -46,15 +47,15 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     setIsLoading(true);
     setError(null);
     try {
-      const signedIn = await signIn("password", {
-        flow: mode,
-        email: email.trim(),
-        password,
-      });
-      if (signedIn) {
-        navigate(redirect, { replace: true });
-      } else {
+      const result = mode === "signIn"
+        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        : await supabase.auth.signUp({ email: email.trim(), password });
+      if (result.error) throw result.error;
+      if (mode === "signUp" && !result.data.session) {
+        setError("Check your email to confirm your account, then sign in.");
         setIsLoading(false);
+      } else {
+        navigate(redirect, { replace: true });
       }
     } catch (e) {
       setError(err(e));
@@ -176,7 +177,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           </form>
 
           <div className="rounded-b-3xl border-t border-white/50 bg-white/30 px-6 py-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
-            Secured by Convex Auth
+             Secured by Supabase Auth
           </div>
         </Card>
       </div>
