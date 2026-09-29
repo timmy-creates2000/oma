@@ -19,21 +19,29 @@ import {
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router";
 
-const NAV: Array<{ to: string; label: string; icon: React.ComponentType<{ className?: string }>; perm?: string }> = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/live", label: "Live attendance", icon: Radio, perm: "view_reports" },
-  { to: "/employees", label: "Employees", icon: Users, perm: "manage_employees" },
-  { to: "/attendance-admin", label: "Attendance", icon: ClipboardCheck, perm: "view_reports" },
-  { to: "/leave-admin", label: "Leave", icon: CalendarDays, perm: "view_reports" },
-  { to: "/corrections", label: "Corrections", icon: Timer, perm: "view_reports" },
-  { to: "/devices", label: "Devices", icon: Fingerprint, perm: "manage_devices" },
-  { to: "/qr", label: "QR displays", icon: QrCode, perm: "manage_qr" },
-  { to: "/kiosk", label: "Kiosk", icon: ScanLine },
-  { to: "/analytics", label: "Analytics", icon: BarChart3, perm: "view_reports" },
-  { to: "/reports", label: "Reports", icon: FileText, perm: "view_reports" },
-  { to: "/notifications", label: "Notifications", icon: Bell },
-  { to: "/audit", label: "Audit logs", icon: ScrollText, perm: "view_audit" },
-  { to: "/settings", label: "Settings", icon: Settings, perm: "manage_settings" },
+// employeeOnly = show ONLY to employees; perm = show only to roles that have that perm
+const NAV: Array<{
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  perm?: string;
+  employeeOnly?: boolean;
+}> = [
+  { to: "/dashboard",        label: "Dashboard",       icon: LayoutDashboard },
+  { to: "/me",               label: "My workspace",    icon: CheckCheck, employeeOnly: true },
+  { to: "/live",             label: "Live attendance", icon: Radio,         perm: "view_reports" },
+  { to: "/employees",        label: "Employees",       icon: Users,         perm: "manage_employees" },
+  { to: "/attendance-admin", label: "Attendance",      icon: ClipboardCheck,perm: "view_reports" },
+  { to: "/leave-admin",      label: "Leave",           icon: CalendarDays,  perm: "view_reports" },
+  { to: "/corrections",      label: "Corrections",     icon: Timer,         perm: "view_reports" },
+  { to: "/devices",          label: "Devices",         icon: Fingerprint,   perm: "manage_devices" },
+  { to: "/qr",               label: "QR displays",     icon: QrCode,        perm: "manage_qr" },
+  { to: "/kiosk",            label: "Kiosk",           icon: ScanLine },
+  { to: "/analytics",        label: "Analytics",       icon: BarChart3,     perm: "view_reports" },
+  { to: "/reports",          label: "Reports",         icon: FileText,      perm: "view_reports" },
+  { to: "/notifications",    label: "Notifications",   icon: Bell },
+  { to: "/audit",            label: "Audit logs",      icon: ScrollText,    perm: "view_audit" },
+  { to: "/settings",         label: "Settings",        icon: Settings,      perm: "manage_settings" },
 ];
 
 /** Client-side mirror of the permission matrix enforced by Supabase functions. */
@@ -63,7 +71,14 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
   const [open, setOpen] = useState(false);
 
   const role = ws?.employee.role ?? "employee";
-  const visibleNav = NAV.filter((item) => !item.perm || hasPerm(role, item.perm));
+  const isEmployee = role === "employee";
+  const visibleNav = NAV.filter((item) => {
+    // items with a perm are hidden from pure employees
+    if (item.perm && !hasPerm(role, item.perm)) return false;
+    // employeeOnly items are hidden from admins/managers
+    if (item.employeeOnly && !isEmployee) return false;
+    return true;
+  });
   const unread = notifications.filter((n) => !n.read_at).length;
 
   useEffect(() => {

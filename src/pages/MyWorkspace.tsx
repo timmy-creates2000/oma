@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Fingerprint, Plus, ShieldCheck, History, Plane, TimerReset,
-  Smartphone, Loader2, ScanLine, Copy, Check, CalendarDays,
+  Smartphone, Loader2, ScanLine, Copy, Check, CalendarDays, LogOut as LogOutIcon,
 } from "lucide-react";
 import { supabase, fmtTime, fmtDay, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
@@ -43,6 +43,7 @@ type BalanceRow = { id: string; leave_type_id: string; used_days: number; leave_
 type LeaveRow = { id: string; leave_type_id: string; start_date: string; end_date: string; reason: string; status: string; leave_types: { name: string } | null };
 type CorrectionRow = { id: string; session_date: string; reason: string; status: string; reviewer_note: string | null };
 type DeviceRow = { id: string; label: string; platform: string; status: string; public_key_fingerprint: string; registered_at: string };
+type EarlyClockoutRow = { id: string; status: string; reason: string; reviewer_note: string | null; created_at: string };
 
 export default function MyWorkspace() {
   const { ws } = useWorkspace();
@@ -56,12 +57,13 @@ export default function MyWorkspace() {
   const [token, setToken] = useState<{ raw: string; expiresAt: number } | null>(null);
   const [scanning, setScanning] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [earlyClockouts, setEarlyClockouts] = useState<EarlyClockoutRow[]>([]);
 
   const load = async () => {
     if (!ws) return;
     const me = ws.employee.id;
     const dk = new Date().toISOString().slice(0, 10);
-    const [s, h, d, b, l, c, lt] = await Promise.all([
+    const [s, h, d, b, l, c, lt, eco] = await Promise.all([
       supabase.from("attendance_sessions").select("*").eq("employee_id", me).eq("day_key", dk).maybeSingle(),
       supabase.from("attendance_sessions").select("*").eq("employee_id", me).order("clock_in_at", { ascending: false }).limit(60),
       supabase.from("registered_devices").select("*").eq("employee_id", me).order("registered_at", { ascending: false }),
@@ -69,6 +71,7 @@ export default function MyWorkspace() {
       supabase.from("leave_requests").select("*, leave_types(name)").eq("employee_id", me).order("created_at", { ascending: false }),
       supabase.from("correction_requests").select("*").eq("employee_id", me).order("created_at", { ascending: false }),
       supabase.from("leave_types").select("id, name, annual_quota_days").eq("company_id", ws.employee.company_id),
+      supabase.from("early_clockout_requests").select("id, status, reason, reviewer_note, created_at").eq("employee_id", me).order("created_at", { ascending: false }).limit(10),
     ]);
     setToday((s.data ?? null) as Session0 | null);
     setHistory((h.data ?? []) as Session0[]);
@@ -77,10 +80,32 @@ export default function MyWorkspace() {
     setMyLeave((l.data ?? []) as LeaveRow[]);
     setMyCorrections((c.data ?? []) as CorrectionRow[]);
     setLeaveTypes((lt.data ?? []) as Array<{ id: string; name: string; annual_quota_days: number }>);
+    setEarlyClockouts((eco.data ?? []) as EarlyClockoutRow[]);
   };
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ws]);
+
+  // Realtime — refresh when HR approves early clock-out or session changes
+  useEffect(() => {
+    if (!ws) return;
+    const me = ws.employee.id;
+    const channel = supabase
+      .channel(`workspace-${me}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "attendance_sessions", filter: `employee_id=eq.${me}` },
+        () => load(),
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "early_clockout_requests", filter: `employee_id=eq.${me}` },
+        () => load(),
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws]);
 
@@ -201,6 +226,35 @@ export default function MyWorkspace() {
     }
   };
 
+  // early clock-out request
+  const [ecoOpen, setEcoOpen] = useState(false);
+  const [ecoReason, setEcoReason] = useState("");
+  const [ecoSubmitting, setEcoSubmitting] = useState(false);
+
+  // is it before closing hour right now?
+  const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+  const closingMinute = ws?.company?.end_minute ?? 1050;
+  const isBeforeClosing = nowMinutes < closingMinute;
+
+  // today's pending early clock-out request (if any)
+  const pendingEco = earlyClockouts.find((e) => e.status === "pending");
+
+  const handleRequestEarlyClockout = async () => {
+    setEcoSubmitting(true);
+    try {
+      const { error } = await supabase.rpc("request_early_clockout", { p_reason: ecoReason });
+      if (error) throw error;
+      toast.success("Request sent to HR", { description: "You'll be notified once it's reviewed." });
+      setEcoOpen(false);
+      setEcoReason("");
+      await load();
+    } catch (e) {
+      toast.error(err(e));
+    } finally {
+      setEcoSubmitting(false);
+    }
+  };
+
   if (!ws) {
     return (
       <AppShell title="My workspace">
@@ -226,7 +280,7 @@ export default function MyWorkspace() {
             <div>
               <p className="text-xs font-medium text-muted-foreground">Attendance status</p>
               {openSession ? (
-                <p className="text-xl font-bold">Working since {fmtTime(today!.clock_in_at)}</p>
+                <p className="text-xl font-bold">Working since {fmtTime(today?.clock_in_at ?? null)}</p>
               ) : today ? (
                 <p className="text-xl font-bold">Clocked out at {fmtTime(today.clock_out_at)}</p>
               ) : (
@@ -245,6 +299,47 @@ export default function MyWorkspace() {
             </Button>
             {!activeDevice && (
               <p className="max-w-48 text-center text-[11px] text-muted-foreground">Register a device first</p>
+            )}
+            {/* Early clock-out request — visible only when clocked in and before closing hour */}
+            {openSession && isBeforeClosing && (
+              pendingEco ? (
+                <p className="flex items-center gap-1.5 text-[11px] text-amber-600">
+                  <Loader2 className="size-3 animate-spin" /> Early clock-out pending HR review
+                </p>
+              ) : (
+                <Dialog open={ecoOpen} onOpenChange={setEcoOpen}>
+                  <DialogTrigger asChild>
+                    <button className="flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-destructive">
+                      <LogOutIcon className="size-3" /> Request early clock-out
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent className="glass-strong">
+                    <DialogHeader>
+                      <DialogTitle>Request early clock-out</DialogTitle>
+                      <DialogDescription>
+                        HR will review your request. If approved you will be automatically clocked out.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div>
+                      <Label>Reason</Label>
+                      <Textarea
+                        className="mt-1.5"
+                        rows={3}
+                        placeholder="Why do you need to leave early?"
+                        value={ecoReason}
+                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setEcoReason(e.target.value)}
+                      />
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" className="glass" onClick={() => setEcoOpen(false)}>Cancel</Button>
+                      <Button onClick={handleRequestEarlyClockout} disabled={!ecoReason.trim() || ecoSubmitting}>
+                        {ecoSubmitting && <Loader2 className="size-4 animate-spin" />}
+                        Submit request
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+              )
             )}
             {token && (
               <button className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
@@ -511,6 +606,7 @@ export default function MyWorkspace() {
         </TabsContent>
 
         <TabsContent value="corrections">
+          <div className="space-y-4">
           <GlassCard className="p-5">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="flex items-center gap-2 font-semibold">
@@ -577,6 +673,34 @@ export default function MyWorkspace() {
               </div>
             )}
           </GlassCard>
+
+          {/* Early clock-out request history */}
+          {earlyClockouts.length > 0 && (
+            <GlassCard className="p-5">
+              <h3 className="mb-3 flex items-center gap-2 font-semibold">
+                <LogOutIcon className="size-4 text-primary" /> Early clock-out requests
+              </h3>
+              <div className="space-y-2">
+                {earlyClockouts.map((r) => (
+                  <div key={r.id} className="glass-soft rounded-xl px-4 py-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium">{new Date(r.created_at).toLocaleDateString()}</p>
+                      <Badge variant="secondary" className={
+                        r.status === "approved" ? "bg-emerald-500/15 text-emerald-700"
+                        : r.status === "rejected" ? "bg-rose-500/15 text-rose-700"
+                        : "bg-amber-500/15 text-amber-700"
+                      }>
+                        {r.status}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{r.reason}</p>
+                    {r.reviewer_note && <p className="mt-1 text-xs italic text-muted-foreground">HR: {r.reviewer_note}</p>}
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          )}
+          </div>
         </TabsContent>
       </Tabs>
     </AppShell>

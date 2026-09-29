@@ -1,15 +1,17 @@
 import { useSupabaseAuth } from "./use-supabase-auth";
 
 /**
- * One hook for the whole app's auth state backed by Supabase Auth.
+ * App-wide auth hook backed by Supabase password auth.
  */
 export function useSession() {
-  const { loading, user, signOut } = useSupabaseAuth();
+  const { loading, user, signIn, signUp, signOut } = useSupabaseAuth();
 
   return {
     isLoading: loading,
     isAuthenticated: !!user,
     user: user ?? null,
+    signIn,
+    signUp,
     signOut,
   };
 }

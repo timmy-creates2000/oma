@@ -1,16 +1,15 @@
 import {
   createContext, useContext, useEffect, useState, type ReactNode,
 } from "react";
-import { supabase, hasSupabaseCreds } from "@/lib/sb";
+import { supabase } from "@/lib/sb";
 import type { Session, User } from "@supabase/supabase-js";
 
 type AuthCtx = {
   session: Session | null;
   user: User | null;
   loading: boolean;
-  sendOtp: (email: string) => Promise<void>;
-  verifyOtp: (email: string, token: string) => Promise<void>;
-  signInAsGuest: () => Promise<void>;
+  signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<{ needsConfirmation: boolean }>;
   signOut: () => Promise<void>;
 };
 
@@ -18,7 +17,7 @@ const Ctx = createContext<AuthCtx | null>(null);
 
 export function SupabaseAuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser]       = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -35,23 +34,16 @@ export function SupabaseAuthProvider({ children }: { children: ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const sendOtp = async (email: string) => {
-    const { error } = await supabase.auth.signInWithOtp({ email });
+  const signIn = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (error) throw error;
   };
 
-  const verifyOtp = async (email: string, token: string) => {
-    const { error } = await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: "email",
-    });
+  const signUp = async (email: string, password: string) => {
+    const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
     if (error) throw error;
-  };
-
-  const signInAsGuest = async () => {
-    const { error } = await supabase.auth.signInAnonymously();
-    if (error) throw error;
+    // If email confirmation is enabled in Supabase, data.session will be null
+    return { needsConfirmation: !data.session };
   };
 
   const signOut = async () => {
@@ -60,9 +52,7 @@ export function SupabaseAuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <Ctx.Provider
-      value={{ session, user, loading, sendOtp, verifyOtp, signInAsGuest, signOut }}
-    >
+    <Ctx.Provider value={{ session, user, loading, signIn, signUp, signOut }}>
       {children}
     </Ctx.Provider>
   );

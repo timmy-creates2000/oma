@@ -1,27 +1,23 @@
 import { createClient } from "@supabase/supabase-js";
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const url = import.meta.env.VITE_SUPABASE_URL as string;
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-const proxyUrl = typeof window !== "undefined"
-  ? `${window.location.origin}/api/supabase`
-  : "http://localhost/api/supabase";
+if (!url || !key) {
+  throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in environment variables.");
+}
 
 export const hasSupabaseCreds = true;
 
 // Untyped client: row types are declared and cast in this module instead,
 // which keeps RPC args and embedded-resource selects flexible.
-export const supabase = createClient(
-  url ?? proxyUrl,
-  key ?? "replit-supabase-proxy",
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
+export const supabase = createClient(url, key, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
   },
-);
+});
 
 /* --------------------------------- types ---------------------------------- */
 
@@ -43,7 +39,7 @@ export type Employee = {
   branches?: { name: string } | null;
 };
 
-export type Session = {
+export type AttendanceSession = {
   id: string;
   company_id: string;
   employee_id: string;
@@ -245,5 +241,13 @@ export function todayKey(): string {
 }
 
 export function err(e: unknown): string {
-  return e instanceof Error ? e.message : String(e ?? "Something went wrong");
+  if (e instanceof Error) return e.message;
+  if (e && typeof e === "object") {
+    const obj = e as Record<string, unknown>;
+    if (typeof obj.message === "string") return obj.message;
+    if (typeof obj.error_description === "string") return obj.error_description;
+    if (typeof obj.msg === "string") return obj.msg;
+    try { return JSON.stringify(e); } catch { /* fall through */ }
+  }
+  return String(e ?? "Something went wrong");
 }

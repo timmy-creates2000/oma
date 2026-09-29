@@ -137,22 +137,24 @@ export default function Dashboard() {
     peopleWithoutDevice: dash.counts.missing_devices,
   } : null;
 
+  const isEmployee = ws?.employee.role === "employee";
+
   return (
     <AppShell title="Dashboard">
       <PageHeader
         title={`Good ${greeting()}, ${myName.split(" ")[0]}`}
-        subtitle="Here's what's happening across your company today."
+        subtitle={isEmployee ? "Your attendance overview." : "Here's what's happening across your company today."}
       />
 
       {!dash ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 8 }).map((_, i) => (
+          {Array.from({ length: isEmployee ? 2 : 8 }).map((_, i) => (
             <GlassCard key={i} className="h-24 animate-pulse" />
           ))}
         </div>
       ) : (
         <>
-          {/* my status card */}
+          {/* my status card — visible to everyone */}
           <GlassCard strong className="mb-6 p-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -181,149 +183,162 @@ export default function Dashboard() {
             </div>
           </GlassCard>
 
-          {/* stats */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatTile icon={Users} label="Total employees" value={dash.counts.total_employees} />
-            <StatTile icon={UserCheck} label="Present today" value={dash.counts.present} tone="text-emerald-600" />
-            <StatTile icon={Clock3} label="Late today" value={dash.counts.late} tone="text-amber-600" />
-            <StatTile icon={TimerReset} label="Currently in office" value={dash.counts.ongoing} tone="text-sky-600" />
-            <StatTile icon={Plane} label="On leave" value={dash.counts.on_leave} tone="text-violet-600" />
-            <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.counts.absent} tone="text-rose-600" />
-            <StatTile
-              icon={Fingerprint}
-              label="People without a device"
-              value={approvals?.peopleWithoutDevice ?? 0}
-              tone="text-orange-600"
-            />
-            <StatTile
-              icon={Activity}
-              label="Pending reviews"
-              value={(approvals?.leave ?? 0) + (approvals?.corrections ?? 0)}
-              hint={`${approvals?.leave ?? 0} leave · ${approvals?.corrections ?? 0} corrections`}
-            />
-          </div>
+          {/* ── EMPLOYEE VIEW: only their own stats ── */}
+          {isEmployee && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <StatTile icon={Clock3} label="Clock-in" value={mySession ? fmtTime(mySession.clock_in_at) : "—"} />
+              <StatTile icon={LogOut} label="Clock-out" value={mySession?.clock_out_at ? fmtTime(mySession.clock_out_at) : "—"} />
+            </div>
+          )}
 
-          {/* trend + dept */}
-          <div className="mt-6 grid gap-4 lg:grid-cols-3">
-            <GlassCard className="p-5 lg:col-span-2">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="font-semibold">Attendance trend — last 7 days</h3>
-                <Badge variant="outline" className="glass-soft text-[10px]">live</Badge>
+          {/* ── ADMIN / HR / MANAGER VIEW ── */}
+          {!isEmployee && (
+            <>
+              {/* stats */}
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <StatTile icon={Users} label="Total employees" value={dash.counts.total_employees} />
+                <StatTile icon={UserCheck} label="Present today" value={dash.counts.present} tone="text-emerald-600" />
+                <StatTile icon={Clock3} label="Late today" value={dash.counts.late} tone="text-amber-600" />
+                <StatTile icon={TimerReset} label="Currently in office" value={dash.counts.ongoing} tone="text-sky-600" />
+                <StatTile icon={Plane} label="On leave" value={dash.counts.on_leave} tone="text-violet-600" />
+                <StatTile icon={CalendarOff} label="Absent / not arrived" value={dash.counts.absent} tone="text-rose-600" />
+                <StatTile
+                  icon={Fingerprint}
+                  label="People without a device"
+                  value={approvals?.peopleWithoutDevice ?? 0}
+                  tone="text-orange-600"
+                />
+                <StatTile
+                  icon={Activity}
+                  label="Pending reviews"
+                  value={(approvals?.leave ?? 0) + (approvals?.corrections ?? 0)}
+                  hint={`${approvals?.leave ?? 0} leave · ${approvals?.corrections ?? 0} corrections`}
+                />
               </div>
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={dash.trend.map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
-                    <defs>
-                      <linearGradient id="gPresent" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
-                      </linearGradient>
-                      <linearGradient id="gLate" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.5} />
-                        <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.05} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" vertical={false} />
-                    <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={11} />
-                    <YAxis tickLine={false} axisLine={false} fontSize={11} allowDecimals={false} width={28} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Area type="monotone" dataKey="present" stroke="#6366f1" fill="url(#gPresent)" strokeWidth={2.5} name="Present" />
-                    <Area type="monotone" dataKey="late" stroke="#f59e0b" fill="url(#gLate)" strokeWidth={2} name="Late" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </GlassCard>
 
-            <GlassCard className="p-5">
-              <h3 className="mb-4 font-semibold">Departments today</h3>
-              <div className="h-56">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={dash.deptRows} layout="vertical" barSize={14}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" horizontal={false} />
-                    <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} fontSize={11} />
-                    <Tooltip contentStyle={tooltipStyle} />
-                    <Bar dataKey="present" stackId="a" fill="#10b981" name="Present" />
-                    <Bar dataKey="late" stackId="a" fill="#f59e0b" name="Late" />
-                    <Bar dataKey="absent" stackId="a" fill="#f43f5e" radius={[0, 4, 4, 0]} name="Absent" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </GlassCard>
-          </div>
-
-          {/* activity */}
-          <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            <GlassCard className="p-5">
-              <div className="mb-3 flex items-center gap-2">
-                <LogIn className="size-4 text-primary" />
-                <h3 className="font-semibold">Recent attendance activity</h3>
-              </div>
-              <div className="space-y-2">
-                 {dash.recentEvents.length === 0 && (
-                  <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>
-                )}
-                {dash.recentEvents.map((ev) => (
-                  <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
-                    <div className="flex items-center gap-2.5">
-                      {ev.kind === "clock_out" ? (
-                        <LogOut className="size-3.5 text-rose-500" />
-                      ) : (
-                        <LogIn className="size-3.5 text-emerald-500" />
-                      )}
-                      <div>
-                         <p className="text-sm font-medium">{ev.employee_name}</p>
-                        <p className="text-[11px] text-muted-foreground">
-                           {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
-                        </p>
-                      </div>
-                    </div>
-                     <span className="text-[11px] text-muted-foreground">{ev.employee_code}</span>
+              {/* trend + dept */}
+              <div className="mt-6 grid gap-4 lg:grid-cols-3">
+                <GlassCard className="p-5 lg:col-span-2">
+                  <div className="mb-4 flex items-center justify-between">
+                    <h3 className="font-semibold">Attendance trend — last 7 days</h3>
+                    <Badge variant="outline" className="glass-soft text-[10px]">live</Badge>
                   </div>
-                ))}
-              </div>
-            </GlassCard>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={dash.trend.map((t) => ({ ...t, label: DAY_FMT(t.day) }))}>
+                        <defs>
+                          <linearGradient id="gPresent" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#6366f1" stopOpacity={0.5} />
+                            <stop offset="100%" stopColor="#6366f1" stopOpacity={0.05} />
+                          </linearGradient>
+                          <linearGradient id="gLate" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.5} />
+                            <stop offset="100%" stopColor="#f59e0b" stopOpacity={0.05} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" vertical={false} />
+                        <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={11} />
+                        <YAxis tickLine={false} axisLine={false} fontSize={11} allowDecimals={false} width={28} />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Area type="monotone" dataKey="present" stroke="#6366f1" fill="url(#gPresent)" strokeWidth={2.5} name="Present" />
+                        <Area type="monotone" dataKey="late" stroke="#f59e0b" fill="url(#gLate)" strokeWidth={2} name="Late" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </GlassCard>
 
-            <GlassCard className="p-5">
-              <h3 className="mb-3 font-semibold">Needs attention</h3>
-              <div className="space-y-2">
-                {(approvals?.leave ?? 0) > 0 && (
-                  <ActionRow icon={Plane} tone="text-sky-600"
-                    title={`${approvals?.leave} leave request${(approvals?.leave ?? 0) > 1 ? "s" : ""} awaiting review`}
-                    onClick={() => navigate("/leave-admin")} />
-                )}
-                {(approvals?.corrections ?? 0) > 0 && (
-                  <ActionRow icon={TimerReset} tone="text-amber-600"
-                    title={`${approvals?.corrections} attendance correction${(approvals?.corrections ?? 0) > 1 ? "s" : ""} to review`}
-                    onClick={() => navigate("/corrections")} />
-                )}
-                {(approvals?.devices ?? 0) > 0 && (
-                  <ActionRow icon={Fingerprint} tone="text-orange-600"
-                    title={`${approvals?.devices} device replacement${(approvals?.devices ?? 0) > 1 ? "s" : ""} waiting`}
-                    onClick={() => navigate("/devices")} />
-                )}
-                {(approvals?.peopleWithoutDevice ?? 0) > 0 && (
-                  <ActionRow icon={AlertTriangle} tone="text-rose-600"
-                    title={`${approvals?.peopleWithoutDevice} ${(approvals?.peopleWithoutDevice ?? 0) === 1 ? "person has" : "people have"} no registered device`}
-                    onClick={() => navigate("/employees")} />
-                )}
-                {approvals &&
-                  approvals.leave === 0 &&
-                  approvals.corrections === 0 &&
-                  approvals.devices === 0 &&
-                  approvals.peopleWithoutDevice === 0 && (
-                    <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
-                  )}
+                <GlassCard className="p-5">
+                  <h3 className="mb-4 font-semibold">Departments today</h3>
+                  <div className="h-56">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dash.deptRows} layout="vertical" barSize={14}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" horizontal={false} />
+                        <XAxis type="number" hide />
+                        <YAxis type="category" dataKey="name" width={90} tickLine={false} axisLine={false} fontSize={11} />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Bar dataKey="present" stackId="a" fill="#10b981" name="Present" />
+                        <Bar dataKey="late" stackId="a" fill="#f59e0b" name="Late" />
+                        <Bar dataKey="absent" stackId="a" fill="#f43f5e" radius={[0, 4, 4, 0]} name="Absent" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </GlassCard>
               </div>
-              {hasPerm(ws?.employee.role, "manage_employees") && (
-                <div className="mt-4 border-t border-white/40 pt-4">
-                  <Button variant="outline" className="glass w-full" onClick={() => navigate("/employees")}>
-                    <Building2 className="size-4" /> Manage employees
-                  </Button>
-                </div>
-              )}
-            </GlassCard>
-          </div>
+
+              {/* activity */}
+              <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                <GlassCard className="p-5">
+                  <div className="mb-3 flex items-center gap-2">
+                    <LogIn className="size-4 text-primary" />
+                    <h3 className="font-semibold">Recent attendance activity</h3>
+                  </div>
+                  <div className="space-y-2">
+                    {dash.recentEvents.length === 0 && (
+                      <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>
+                    )}
+                    {dash.recentEvents.map((ev) => (
+                      <div key={ev.id} className="glass-soft flex items-center justify-between rounded-xl px-3.5 py-2.5">
+                        <div className="flex items-center gap-2.5">
+                          {ev.kind === "clock_out" ? (
+                            <LogOut className="size-3.5 text-rose-500" />
+                          ) : (
+                            <LogIn className="size-3.5 text-emerald-500" />
+                          )}
+                          <div>
+                            <p className="text-sm font-medium">{ev.employee_name}</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              {ev.kind === "clock_out" ? "Clocked out" : ev.kind === "clock_in" ? "Clocked in" : "Auto clock-out"} · {fmtTime(ev.at)}
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[11px] text-muted-foreground">{ev.employee_code}</span>
+                      </div>
+                    ))}
+                  </div>
+                </GlassCard>
+
+                <GlassCard className="p-5">
+                  <h3 className="mb-3 font-semibold">Needs attention</h3>
+                  <div className="space-y-2">
+                    {(approvals?.leave ?? 0) > 0 && (
+                      <ActionRow icon={Plane} tone="text-sky-600"
+                        title={`${approvals?.leave} leave request${(approvals?.leave ?? 0) > 1 ? "s" : ""} awaiting review`}
+                        onClick={() => navigate("/leave-admin")} />
+                    )}
+                    {(approvals?.corrections ?? 0) > 0 && (
+                      <ActionRow icon={TimerReset} tone="text-amber-600"
+                        title={`${approvals?.corrections} attendance correction${(approvals?.corrections ?? 0) > 1 ? "s" : ""} to review`}
+                        onClick={() => navigate("/corrections")} />
+                    )}
+                    {(approvals?.devices ?? 0) > 0 && (
+                      <ActionRow icon={Fingerprint} tone="text-orange-600"
+                        title={`${approvals?.devices} device replacement${(approvals?.devices ?? 0) > 1 ? "s" : ""} waiting`}
+                        onClick={() => navigate("/devices")} />
+                    )}
+                    {(approvals?.peopleWithoutDevice ?? 0) > 0 && (
+                      <ActionRow icon={AlertTriangle} tone="text-rose-600"
+                        title={`${approvals?.peopleWithoutDevice} ${(approvals?.peopleWithoutDevice ?? 0) === 1 ? "person has" : "people have"} no registered device`}
+                        onClick={() => navigate("/employees")} />
+                    )}
+                    {approvals &&
+                      approvals.leave === 0 &&
+                      approvals.corrections === 0 &&
+                      approvals.devices === 0 &&
+                      approvals.peopleWithoutDevice === 0 && (
+                        <p className="py-6 text-center text-sm text-muted-foreground">All clear. Nothing needs review.</p>
+                      )}
+                  </div>
+                  {hasPerm(ws?.employee.role, "manage_employees") && (
+                    <div className="mt-4 border-t border-white/40 pt-4">
+                      <Button variant="outline" className="glass w-full" onClick={() => navigate("/employees")}>
+                        <Building2 className="size-4" /> Manage employees
+                      </Button>
+                    </div>
+                  )}
+                </GlassCard>
+              </div>
+            </>
+          )}
         </>
       )}
     </AppShell>

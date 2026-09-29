@@ -6,66 +6,68 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSession } from "@/hooks/use-auth";
-import { supabase } from "@/lib/sb";
 import { err } from "@/lib/sb";
 import { ArrowRight, Loader2, Lock, Mail, ScanLine, UserPlus } from "lucide-react";
-import { Suspense, useEffect, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 
 interface AuthProps {
   redirectAfterAuth?: string;
 }
 
-function resolveRedirectAfterAuth(returnTo: string | null, fallback = "/dashboard") {
-  if (returnTo?.startsWith("/") && !returnTo.startsWith("//")) {
-    return returnTo;
-  }
+function resolveRedirect(returnTo: string | null, fallback = "/dashboard") {
+  if (returnTo?.startsWith("/") && !returnTo.startsWith("//")) return returnTo;
   return fallback;
 }
 
 function Auth({ redirectAfterAuth }: AuthProps = {}) {
-  const { isAuthenticated } = useSession();
+  const { isAuthenticated, signIn, signUp } = useSession();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const redirect = resolveRedirectAfterAuth(
-    searchParams.get("returnTo"),
-    redirectAfterAuth,
-  );
+  const redirect = resolveRedirect(searchParams.get("returnTo"), redirectAfterAuth);
 
-  const [mode, setMode] = useState<"signIn" | "signUp">("signIn");
-  const [email, setEmail] = useState("");
+  const [mode, setMode]         = useState<"signIn" | "signUp">("signIn");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage]   = useState<{ text: string; type: "error" | "info" } | null>(null);
 
   useEffect(() => {
     if (isAuthenticated) navigate(redirect, { replace: true });
   }, [isAuthenticated, navigate, redirect]);
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
     setIsLoading(true);
-    setError(null);
+    setMessage(null);
+
     try {
-      const result = mode === "signIn"
-        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        : await supabase.auth.signUp({ email: email.trim(), password });
-      if (result.error) throw result.error;
-      if (mode === "signUp" && !result.data.session) {
-        setError("Check your email to confirm your account, then sign in.");
-        setIsLoading(false);
+      if (mode === "signIn") {
+        await signIn(email, password);
+        // navigation handled by the useEffect above
       } else {
-        navigate(redirect, { replace: true });
+        const { needsConfirmation } = await signUp(email, password);
+        if (needsConfirmation) {
+          setMessage({
+            text: "Account created! Check your email to confirm it, then sign in.",
+            type: "info",
+          });
+          setMode("signIn");
+          setPassword("");
+        }
+        // if no confirmation needed, useEffect navigates automatically
       }
-    } catch (e) {
-      setError(err(e));
+    } catch (error) {
+      setMessage({ text: err(error), type: "error" });
+    } finally {
       setIsLoading(false);
     }
   };
 
   const switchMode = (next: "signIn" | "signUp") => {
     setMode(next);
-    setError(null);
+    setMessage(null);
+    setPassword("");
   };
 
   return (
@@ -99,7 +101,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
               <div className="space-y-1.5">
                 <Label htmlFor="email">Work email</Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Mail className="absolute left-3 top-3 size-4 text-muted-foreground" />
                   <Input
                     id="email"
                     name="email"
@@ -118,7 +120,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
               <div className="space-y-1.5">
                 <Label htmlFor="password">Password</Label>
                 <div className="relative">
-                  <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                  <Lock className="absolute left-3 top-3 size-4 text-muted-foreground" />
                   <Input
                     id="password"
                     name="password"
@@ -135,28 +137,26 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                 </div>
                 {mode === "signUp" && (
                   <p className="text-[11px] text-muted-foreground">
-                    Use at least 8 characters. You&rsquo;ll create a company on the next step.
+                    Min 8 characters. You&rsquo;ll set up your company on the next step.
                   </p>
                 )}
               </div>
 
-              {error && (
-                <p className="glass-soft rounded-xl px-3 py-2 text-sm text-destructive">{error}</p>
+              {message && (
+                <p className={`glass-soft rounded-xl px-3 py-2 text-sm ${
+                  message.type === "error" ? "text-destructive" : "text-emerald-700"
+                }`}>
+                  {message.text}
+                </p>
               )}
 
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Please wait...
-                  </>
+                  <><Loader2 className="size-4 animate-spin" /> Please wait…</>
                 ) : mode === "signIn" ? (
-                  <>
-                    Sign in <ArrowRight className="ml-2 h-4 w-4" />
-                  </>
+                  <>Sign in <ArrowRight className="size-4" /></>
                 ) : (
-                  <>
-                    <UserPlus className="mr-2 h-4 w-4" /> Create account
-                  </>
+                  <><UserPlus className="size-4" /> Create account</>
                 )}
               </Button>
             </CardContent>
@@ -177,7 +177,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
           </form>
 
           <div className="rounded-b-3xl border-t border-white/50 bg-white/30 px-6 py-4 text-center text-xs text-muted-foreground backdrop-blur-sm">
-             Secured by Supabase Auth
+            Secured by Supabase Auth
           </div>
         </Card>
       </div>
