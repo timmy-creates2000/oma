@@ -1657,7 +1657,7 @@ begin
   select * into co from companies where id = p_company;
   if co.id is null then raise exception 'Company not found'; end if;
   select * into founder from employees
-  where company_id = p_company and role = 'company_admin' limit 1;
+  where company_id = p_company and employees.role = 'company_admin' limit 1;
   scheduled := greatest(1, co.end_minute - co.start_minute);
 
   insert into branches (company_id, name, address, latitude, longitude, geofence_radius_m)
@@ -1701,8 +1701,8 @@ begin
     end if;
   end loop;
 
-  select id into type_annual from leave_types where company_id = p_company and name = 'Annual Leave';
-  select id into type_sick   from leave_types where company_id = p_company and name = 'Sick Leave';
+  select id into type_annual from leave_types where company_id = p_company and leave_types.name = 'Annual Leave';
+  select id into type_sick   from leave_types where company_id = p_company and leave_types.name = 'Sick Leave';
 
   for rec in select id from employees where company_id = p_company loop
     insert into leave_balances (company_id, employee_id, leave_type_id, year, used_days)
