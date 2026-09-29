@@ -134,10 +134,11 @@ export type Balance = {
 
 export type Notification = {
   id: string;
+  company_id: string;
   type: string;
   title: string;
   body: string;
-  audience: string;
+  audience: "user" | "admins" | "employee";
   for_user_id: string | null;
   read_at: string | null;
   created_at: string;
@@ -145,10 +146,39 @@ export type Notification = {
 
 export type AuditLog = {
   id: string;
+  company_id: string;
   actor_email: string;
   action: string;
   detail: string | null;
   at: string;
+};
+
+export type AttendanceEvent = {
+  id: string;
+  company_id: string;
+  employee_id: string;
+  session_id: string | null;
+  kind: "clock_in" | "clock_out" | "break_start" | "break_end" | "auto_clock_out";
+  at: string;
+  day_key: string;
+  device_id: string | null;
+  display_id: string | null;
+  geo_verified: boolean | null;
+};
+
+export type EarlyClockoutRequest = {
+  id: string;
+  company_id: string;
+  employee_id: string;
+  session_id: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected";
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  reviewer_note: string | null;
+  created_at: string;
+  employees?: { name: string; employee_code: string } | null;
+  attendance_sessions?: { clock_in_at: string } | null;
 };
 
 export type Company = {

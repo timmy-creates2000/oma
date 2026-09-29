@@ -53,7 +53,10 @@ export default function Reports() {
     setLoading(true);
     (async () => {
       const { data: v, error } = await supabase.rpc("analytics_range", {
-        p_from: from, p_to: to, p_department: dept === "all" ? null : dept,
+        p_from: from, p_to: to,
+        p_department: dept === "all" ? null : dept,
+        p_branch: null,
+        p_employee: null,
       });
       if (!error && v) {
         const d = v as unknown as { perEmployee: Row[] };

@@ -982,16 +982,20 @@ begin
   select * into me from my_employee();
   if p_end < p_start then raise exception 'End date must be on or after start date'; end if;
   if btrim(p_reason) = '' then raise exception 'A reason is required'; end if;
-  if exists (select 1 from leave_requests
-             where employee_id = me.id and status in ('pending','approved')
-               and start_date <= p_end and p_start <= end_date) then
+  if exists (select 1 from leave_requests lr
+             where lr.employee_id = me.id
+               and lr.status in ('pending','approved')
+               and lr.start_date <= p_end
+               and p_start <= lr.end_date) then
     raise exception 'You already have a request overlapping these dates';
   end if;
   select * into lt from leave_types where id = p_type and company_id = me.company_id;
   if lt.id is null then raise exception 'Leave type not found'; end if;
   need := work_days_between(p_start, p_end, me.company_id);
   select * into bal from leave_balances
-  where employee_id = me.id and leave_type_id = p_type and year = y;
+  where leave_balances.employee_id = me.id
+    and leave_balances.leave_type_id = p_type
+    and leave_balances.year = y;
   if bal.id is not null and bal.used_days + need > lt.annual_quota_days then
     raise exception 'Insufficient balance: only % day(s) left of %.',
       greatest(0, lt.annual_quota_days - bal.used_days)::text, lt.name;
@@ -1061,7 +1065,8 @@ declare me employees;
 begin
   select * into me from my_employee();
   update leave_requests set status = 'cancelled'
-  where id = p_request and employee_id = me.id and status = 'pending';
+  where id = p_request and employee_id = me.id
+    and leave_requests.status = 'pending';
   if not found then raise exception 'Only your own pending requests can be cancelled'; end if;
   insert into audit_logs (company_id, actor_email, action, detail)
   values (me.company_id, me.email, 'leave.cancelled', p_request::text);
@@ -1751,7 +1756,9 @@ begin
     select generate_series(current_date - 30, current_date - 1, interval '1 day')::date
   loop
     if not (extract(dow from day)::int = any(co.work_days)) then continue; end if;
-    if exists (select 1 from public_holidays where company_id = p_company and date = day) then
+    if exists (select 1 from public_holidays
+             where public_holidays.company_id = p_company
+               and public_holidays.date = day) then
       continue;
     end if;
 
