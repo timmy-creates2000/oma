@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { GlassCard } from "@/components/glass";
@@ -6,44 +7,15 @@ import { ScanLine, ChevronLeft, RefreshCw } from "lucide-react";
 import { supabase, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
 
-/** Deterministic visual matrix rendered from the current token.
- *  The "scan" happens by submitting the current token's raw value —
- *  validation always happens on the server (scan_qr RPC). */
-function TokenMatrix({ value, size = 232 }: { value: string; size?: number }) {
-  const cells = 25;
-  let h = 2166136261;
-  for (let i = 0; i < value.length; i++) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  let x = h >>> 0;
-  const bits: boolean[] = [];
-  for (let i = 0; i < cells * cells; i++) {
-    x ^= x << 13; x >>>= 0;
-    x ^= x >> 17;
-    x ^= x << 5; x >>>= 0;
-    bits.push((x & 1) === 1);
-  }
-  const dim = size / cells;
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="rounded-xl bg-white p-1.5 shadow-inner">
-      {bits.map((on, i) =>
-        on ? (
-          <rect key={i}
-            x={(i % cells) * dim + 1.5}
-            y={Math.floor(i / cells) * dim + 1.5}
-            width={dim - 1} height={dim - 1} fill="#111827" rx={1.5} />
-        ) : null,
-      )}
-      {[[0, 0], [cells - 7, 0], [0, cells - 7]].map(([fx, fy], idx) => (
-        <g key={idx}>
-          <rect x={fx * dim + 1.5} y={fy * dim + 1.5} width={dim * 7 - 1} height={dim * 7 - 1} fill="#111827" rx={4} />
-          <rect x={(fx + 1) * dim + 1.5} y={(fy + 1) * dim + 1.5} width={dim * 5 - 1} height={dim * 5 - 1} fill="#fff" rx={3} />
-          <rect x={(fx + 2) * dim + 1.5} y={(fy + 2) * dim + 1.5} width={dim * 3 - 1} height={dim * 3 - 1} fill="#111827" rx={2} />
-        </g>
-      ))}
-    </svg>
-  );
+/** Real, scannable QR code for the current token. Validation always happens on the server (scan_qr RPC). */
+function QrImage({ value, size = 232 }: { value: string; size?: number }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (ref.current) {
+      QRCode.toCanvas(ref.current, value, { width: size, margin: 1, errorCorrectionLevel: "M" }).catch(() => {});
+    }
+  }, [value, size]);
+  return <canvas ref={ref} width={size} height={size} className="rounded-xl bg-white p-1.5 shadow-inner" />;
 }
 
 export default function Kiosk() {
@@ -53,6 +25,24 @@ export default function Kiosk() {
   const [qr, setQr] = useState<{ raw: string; expiresAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
+
+  const [displayChecked, setDisplayChecked] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const ttl = ws?.settings?.qr_rotation_seconds ?? 10;
+
+  const createDisplay = async () => {
+    setCreating(true);
+    try {
+      const { error } = await supabase.rpc("create_qr_display", { p_label: "Main Entrance", p_branch: null });
+      if (error) throw error;
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      setError(err(e));
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // pick the first active display
   useEffect(() => {
@@ -70,8 +60,9 @@ export default function Kiosk() {
         setDisplayId(d.id);
         setDisplayLabel(d.label);
       }
+      setDisplayChecked(true);
     })();
-  }, [ws, displayId]);
+  }, [ws, displayId, reloadKey]);
 
   // mint tokens on a rotation cycle
   useEffect(() => {
@@ -90,14 +81,14 @@ export default function Kiosk() {
       } catch (e) {
         if (!cancelled) setError(err(e));
       }
-      if (!cancelled) timer = setTimeout(mint, 28500);
+      if (!cancelled) timer = setTimeout(mint, Math.max(2000, (ttl - 1.5) * 1000));
     };
     mint();
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [displayId]);
+  }, [displayId, ttl]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
@@ -114,7 +105,6 @@ export default function Kiosk() {
     );
   }
 
-  const ttl = ws.settings?.qr_rotation_seconds ?? 30;
   const remaining = qr ? Math.max(0, Math.ceil((qr.expiresAt - now) / 1000)) : 0;
   const pct = qr ? Math.max(0, Math.min(1, remaining / ttl)) : 0;
 
@@ -139,7 +129,14 @@ export default function Kiosk() {
 
         <div className="glass-inset relative mx-auto flex size-64 items-center justify-center rounded-3xl">
           {qr ? (
-            <TokenMatrix value={qr.raw} size={232} />
+            <QrImage value={qr.raw} size={232} />
+          ) : displayChecked && !displayId ? (
+            <div className="flex flex-col items-center gap-3 p-4 text-center">
+              <p className="text-sm text-muted-foreground">No active QR display yet.</p>
+              <Button onClick={createDisplay} disabled={creating}>
+                {creating ? "Creating…" : "Create display"}
+              </Button>
+            </div>
           ) : (
             <RefreshCw className="size-6 animate-spin text-muted-foreground" />
           )}

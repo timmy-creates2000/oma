@@ -17,10 +17,11 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Fingerprint, Plus, ShieldCheck, History, Plane, TimerReset,
-  Smartphone, Loader2, ScanLine, Copy, Check, CalendarDays, LogOut as LogOutIcon,
+  Smartphone, Loader2, ScanLine, CalendarDays, LogOut as LogOutIcon,
 } from "lucide-react";
 import { supabase, fmtTime, fmtDay, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
+import { QrScanner } from "@/components/QrScanner";
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   present: { label: "Present", cls: "bg-emerald-500/15 text-emerald-700" },
@@ -54,9 +55,8 @@ export default function MyWorkspace() {
   const [myLeave, setMyLeave] = useState<LeaveRow[]>([]);
   const [myCorrections, setMyCorrections] = useState<CorrectionRow[]>([]);
   const [leaveTypes, setLeaveTypes] = useState<Array<{ id: string; name: string; annual_quota_days: number }>>([]);
-  const [token, setToken] = useState<{ raw: string; expiresAt: number } | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [earlyClockouts, setEarlyClockouts] = useState<EarlyClockoutRow[]>([]);
 
   const load = async () => {
@@ -109,37 +109,31 @@ export default function MyWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws]);
 
-  // live demo token from any active kiosk in the company
-  useEffect(() => {
-    if (!ws) return;
-    let stop = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    async function pull() {
-      const { data: displays } = await supabase
-        .from("qr_displays").select("id").eq("company_id", ws!.employee.company_id).eq("active", true).limit(1);
-      const disp = (displays as Array<{ id: string }> | null)?.[0];
-      if (disp) {
-        const { data } = await supabase.rpc("issue_qr_token", { p_display: disp.id });
-        const v = data as { raw: string; expiresAt: number } | null;
-        if (!stop && v) setToken({ raw: (v as any).raw, expiresAt: Number((v as any).expiresAt) });
-      }
-      if (!stop) timer = setTimeout(pull, 25000);
-    }
-    pull();
-    return () => { stop = true; if (timer) clearTimeout(timer); };
-  }, [ws]);
-
   const activeDevice = devices.find((d) => d.status === "active");
   const openSession = today && !today.clock_out_at && today.status !== "on_leave";
-  const canScan = !!activeDevice && !!token;
+  const canScan = !!activeDevice;
 
-  const handleScan = async () => {
-    if (!token || !activeDevice) return;
+  const getPosition = () =>
+    new Promise<{ lat: number; lng: number } | null>((resolve) => {
+      if (!navigator.geolocation) return resolve(null);
+      navigator.geolocation.getCurrentPosition(
+        (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 },
+      );
+    });
+
+  const handleScanResult = async (raw: string) => {
+    if (!activeDevice) return;
+    setScanOpen(false);
     setScanning(true);
     try {
+      const pos = ws?.settings?.require_geo ? await getPosition() : null;
       const { data, error } = await supabase.rpc("scan_qr", {
-        p_raw: token.raw,
+        p_raw: raw.trim(),
         p_device: activeDevice.id,
+        p_lat: pos?.lat ?? null,
+        p_lng: pos?.lng ?? null,
       });
       if (error) throw error;
       const res = data as { message: string; action: string };
@@ -149,17 +143,6 @@ export default function MyWorkspace() {
       toast.error(err(e));
     } finally {
       setScanning(false);
-    }
-  };
-
-  const copyToken = async () => {
-    if (!token) return;
-    try {
-      await navigator.clipboard.writeText(token.raw);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      toast.error("Clipboard unavailable");
     }
   };
 
@@ -293,7 +276,7 @@ export default function MyWorkspace() {
           </div>
           <div className="flex flex-col items-center gap-2">
             <Button size="lg" className="h-14 w-44 text-base shadow-xl shadow-primary/25"
-              disabled={!canScan || scanning} onClick={handleScan}>
+              disabled={!canScan || scanning} onClick={() => setScanOpen(true)}>
               {scanning ? <Loader2 className="size-5 animate-spin" /> : <ScanLine className="size-5" />}
               {openSession ? "Scan to clock out" : "Scan to clock in"}
             </Button>
@@ -341,13 +324,6 @@ export default function MyWorkspace() {
                 </Dialog>
               )
             )}
-            {token && (
-              <button className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground"
-                onClick={copyToken} title="Copy current token (for testing)">
-                {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-                {copied ? "Copied" : "Copy token"}
-              </button>
-            )}
           </div>
         </div>
         {today?.worked_minutes != null && (
@@ -356,6 +332,16 @@ export default function MyWorkspace() {
           </p>
         )}
       </GlassCard>
+
+      <Dialog open={scanOpen} onOpenChange={setScanOpen}>
+        <DialogContent className="glass-strong">
+          <DialogHeader>
+            <DialogTitle>Scan the office QR code</DialogTitle>
+            <DialogDescription>Point your camera at the QR code on the office screen.</DialogDescription>
+          </DialogHeader>
+          {scanOpen && <QrScanner onResult={handleScanResult} />}
+        </DialogContent>
+      </Dialog>
 
       {/* stats row */}
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

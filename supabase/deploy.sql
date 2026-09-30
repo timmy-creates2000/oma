@@ -269,7 +269,7 @@ create index if not exists idx_audit_company on audit_logs(company_id, at desc);
 
 create table if not exists company_settings (
   company_id          uuid primary key references companies(id) on delete cascade,
-  qr_rotation_seconds int not null default 30,
+  qr_rotation_seconds int not null default 10,
   require_geo         boolean not null default false,
   auto_clock_out_hours int not null default 14,
   retention_days      int not null default 730
@@ -744,13 +744,16 @@ declare
   v    json;
 begin
   select * into me from my_employee();
+  if me.id is null then raise exception 'No active employee profile'; end if;
+  if not can('manage_qr') then raise exception 'Forbidden'; end if;
   select * into disp from qr_displays where id = p_display;
   if disp.id is null then raise exception 'Display not found'; end if;
   if disp.company_id <> me.company_id then raise exception 'Forbidden'; end if;
+  if not disp.active then raise exception 'Display is turned off'; end if;
 
   select least(120, greatest(10, qr_rotation_seconds)) into ttl
   from company_settings where company_id = me.company_id;
-  if ttl is null then ttl := 30; end if;
+  if ttl is null then ttl := 10; end if;
 
   raw := encode(extensions.gen_random_bytes(32), 'hex');
   insert into qr_tokens (company_id, display_id, token_hash, nonce, expires_at)
@@ -793,6 +796,7 @@ declare
   early      int;
   ot         int;
   geo_ok     boolean := false;
+  used_rows  int;
 begin
   select * into me from my_employee();
   if me.id is null then raise exception 'No active employee profile'; end if;
@@ -801,14 +805,11 @@ begin
 
   select * into tok from qr_tokens
   where token_hash = encode(extensions.digest(p_raw, 'sha256'), 'hex')
-  order by issued_at desc limit 1 for update;
-  if tok.id is not null and tok.consumed_at is not null then
-    raise exception 'This QR code was already used. Scan the current code.';
-  end if;
-  if tok.id is not null and tok.expires_at < now_ts then
+  order by issued_at desc limit 1;
+  if tok.id is null then raise exception 'Invalid QR code.'; end if;
+  if tok.expires_at < now_ts then
     raise exception 'This QR code has expired. Scan the current code.';
   end if;
-  if tok.id is null then raise exception 'Invalid QR code.'; end if;
 
   select * into disp from qr_displays where id = tok.display_id;
   if disp.company_id <> me.company_id then
@@ -847,7 +848,11 @@ begin
     end if;
   end if;
 
-  update qr_tokens set consumed_at = now_ts, consumed_by = me.id where id = tok.id;
+  insert into qr_token_uses (token_id, employee_id) values (tok.id, me.id) on conflict do nothing;
+  get diagnostics used_rows = row_count;
+  if used_rows = 0 then
+    raise exception 'You already used this QR code. Wait for the next one.';
+  end if;
 
   select * into open_sess from attendance_sessions
   where employee_id = me.id and day_key = (now_ts at time zone 'utc')::date
@@ -2072,3 +2077,60 @@ begin
   );
 end;
 $$;
+
+
+-- ─── Hardening (2026-09-30): own-data-only access, per-employee QR use ───
+create table if not exists public.qr_token_uses (
+  token_id    uuid not null references public.qr_tokens(id) on delete cascade,
+  employee_id uuid not null references public.employees(id) on delete cascade,
+  used_at     timestamptz not null default now(),
+  primary key (token_id, employee_id)
+);
+alter table public.qr_token_uses enable row level security;
+
+create or replace function public.sees_all() returns boolean
+language sql stable as $$ select can('view_reports') or can('manage_attendance') $$;
+
+drop policy if exists sess_read  on public.attendance_sessions;
+drop policy if exists sess_write on public.attendance_sessions;
+create policy sess_read on public.attendance_sessions for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id or sees_all()));
+
+drop policy if exists ev_read  on public.attendance_events;
+drop policy if exists ev_write on public.attendance_events;
+create policy ev_read on public.attendance_events for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id or sees_all()));
+
+drop policy if exists corr_read  on public.correction_requests;
+drop policy if exists corr_write on public.correction_requests;
+create policy corr_read on public.correction_requests for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id
+         or can('approve_corrections') or can('review_corrections')));
+
+drop policy if exists devev_read  on public.device_events;
+drop policy if exists devev_write on public.device_events;
+create policy devev_read on public.device_events for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id
+         or can('manage_devices') or can('approve_devices')));
+
+drop policy if exists eco_write on public.early_clockout_requests;
+
+drop policy if exists lb_read  on public.leave_balances;
+drop policy if exists lb_write on public.leave_balances;
+create policy lb_read on public.leave_balances for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id or sees_all()));
+
+drop policy if exists lr_read  on public.leave_requests;
+drop policy if exists lr_write on public.leave_requests;
+create policy lr_read on public.leave_requests for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id
+         or can('approve_leave') or can('manage_leave') or can('view_reports')));
+
+drop policy if exists dev_read  on public.registered_devices;
+drop policy if exists dev_write on public.registered_devices;
+create policy dev_read on public.registered_devices for select
+  using (company_id = my_company_id() and (employee_id = (my_employee()).id
+         or can('manage_devices') or can('approve_devices') or can('view_reports')));
+
+drop policy if exists notif_ins on public.notifications;
+drop policy if exists notif_upd on public.notifications;

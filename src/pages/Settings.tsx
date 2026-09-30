@@ -78,7 +78,7 @@ export default function Settings() {
         p_end: toMinutes(end),
         p_grace: Number(grace) || 0,
         p_work_days: workDays,
-        p_qr_rotation: Math.min(120, Math.max(10, Number(qrRotation) || 30)),
+        p_qr_rotation: Math.min(120, Math.max(10, Number(qrRotation) || 10)),
         p_require_geo: requireGeo,
         p_auto_out: Number(autoOut) || 14,
         p_retention: Number(retention) || 730,

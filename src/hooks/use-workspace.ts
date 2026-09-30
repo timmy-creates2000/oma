@@ -53,7 +53,7 @@ export function useWorkspace(): {
         company: (co ?? null) as unknown as Company,
         settings: (st ?? {
           company_id: employee.company_id,
-          qr_rotation_seconds: 30,
+          qr_rotation_seconds: 10,
           require_geo: false,
           auto_clock_out_hours: 14,
           retention_days: 730,
