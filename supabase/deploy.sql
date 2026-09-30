@@ -4,7 +4,7 @@
 -- Safe to re-run (idempotent tables, drop-if-exists policies).
 -- ============================================================
 
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
 
 -- ============================================================
 -- TABLES
@@ -614,7 +614,7 @@ declare
   d_id uuid;
 begin
   select * into me from my_employee();
-  fp := encode(digest(me.email || ':' || p_label || ':' || extract(epoch from now())::text, 'sha256'), 'hex');
+  fp := encode(extensions.digest(me.email || ':' || p_label || ':' || extract(epoch from now())::text, 'sha256'), 'hex');
   if (select count(*) from registered_devices
       where employee_id = me.id and status = 'active') >= 2 then
     raise exception 'Device policy: max 2 active devices per employee';
@@ -752,10 +752,10 @@ begin
   from company_settings where company_id = me.company_id;
   if ttl is null then ttl := 30; end if;
 
-  raw := encode(gen_random_bytes(32), 'hex');
+  raw := encode(extensions.gen_random_bytes(32), 'hex');
   insert into qr_tokens (company_id, display_id, token_hash, nonce, expires_at)
   values (me.company_id, p_display,
-          encode(digest(raw, 'sha256'), 'hex'),
+          encode(extensions.digest(raw, 'sha256'), 'hex'),
           left(raw, 16),
           now() + make_interval(secs => ttl));
 
@@ -800,7 +800,7 @@ begin
   select * into st from company_settings where company_id = me.company_id;
 
   select * into tok from qr_tokens
-  where token_hash = encode(digest(p_raw, 'sha256'), 'hex')
+  where token_hash = encode(extensions.digest(p_raw, 'sha256'), 'hex')
   order by issued_at desc limit 1 for update;
   if tok.id is not null and tok.consumed_at is not null then
     raise exception 'This QR code was already used. Scan the current code.';
@@ -1696,7 +1696,7 @@ begin
       values (p_company, emp_id,
         (array['iPhone 15','Pixel 8','Galaxy S24'])[1 + (i % 3)],
         (array['iOS','Android','Android'])[1 + (i % 3)],
-        left(encode(digest(names[i] || ':device', 'sha256'), 'hex'), 32))
+        left(encode(extensions.digest(names[i] || ':device', 'sha256'), 'hex'), 32))
       returning id into dev_id;
       insert into device_events (company_id, device_id, employee_id, type, detail, actor, at)
       values (p_company, dev_id, emp_id, 'registered',

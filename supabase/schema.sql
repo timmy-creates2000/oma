@@ -3,7 +3,7 @@
 -- Run this whole file once in the Supabase SQL editor.
 -- ============================================================
 
-create extension if not exists pgcrypto;
+create extension if not exists pgcrypto with schema extensions;
 
 -- ============================ TABLES =========================
 

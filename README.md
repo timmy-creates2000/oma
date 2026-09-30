@@ -10,16 +10,14 @@ OfficeFlow is a QR-based attendance and HR workspace for modern teams.
 - Supabase Auth, Postgres, Row Level Security, and Postgres RPCs
 - Framer Motion, Recharts, and Lucide
 
-## Run locally or on Replit
+## Run locally
 
 Use Node.js 22 and npm:
 
 ```bash
 npm install
-npm run dev -- --host 0.0.0.0 --port 5000 --strictPort
+npm run dev
 ```
-
-The Replit **Start application** workflow already runs the command above.
 
 ## Supabase setup
 
@@ -32,7 +30,7 @@ Run both files in the Supabase SQL editor for a new Supabase project. The schema
 
 The app uses Supabase Auth with email/password sign-in. The auth trigger creates a profile row, and the onboarding flow calls `create_company` or `join_company` after authentication.
 
-On Replit, the connected Supabase integration is used through the Vite `/api/supabase` proxy. This keeps the project connection credentials out of browser source code. If you prefer direct browser access in another environment, configure:
+Create a `.env.local` file (see `.env.example`) with:
 
 ```env
 VITE_SUPABASE_URL=https://your-project.supabase.co

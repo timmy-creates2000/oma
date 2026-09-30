@@ -71,7 +71,7 @@ begin
       values (p_company, emp_id,
         (array['iPhone 15','Pixel 8','Galaxy S24'])[1 + (i % 3)],
         (array['iOS','Android','Android'])[1 + (i % 3)],
-        left(encode(digest(names[i] || ':device', 'sha256'), 'hex'), 32))
+        left(encode(extensions.digest(names[i] || ':device', 'sha256'), 'hex'), 32))
       returning id into dev_id;
       insert into device_events (company_id, device_id, employee_id, type, detail, actor, at)
       values (p_company, dev_id, emp_id, 'registered', 'Device registered during onboarding',

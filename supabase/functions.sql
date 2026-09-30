@@ -103,7 +103,7 @@ declare
   fp text;
   d_id uuid;
 begin
-  fp := encode(digest(me.email || ':' || p_label || ':' || extract(epoch from now())::text, 'sha256'), 'hex');
+  fp := encode(extensions.digest(me.email || ':' || p_label || ':' || extract(epoch from now())::text, 'sha256'), 'hex');
   if (select count(*) from registered_devices
       where employee_id = me.id and status = 'active') >= 2 then
     raise exception 'Device policy: max 2 active devices per employee';
@@ -231,9 +231,9 @@ begin
   from company_settings where company_id = me.company_id;
   if ttl is null then ttl := 30; end if;
 
-  raw := encode(gen_random_bytes(32), 'hex');
+  raw := encode(extensions.gen_random_bytes(32), 'hex');
   insert into qr_tokens (company_id, display_id, token_hash, nonce, expires_at)
-  values (me.company_id, p_display, encode(digest(raw, 'sha256'), 'hex'),
+  values (me.company_id, p_display, encode(extensions.digest(raw, 'sha256'), 'hex'),
           left(raw, 16), now() + make_interval(secs => ttl));
 
   select json_build_object('raw', raw, 'expiresAt',
@@ -275,7 +275,7 @@ begin
 
   -- 1. token lookup (hash of raw) with single-use + expiry guard, row-locked
   select * into tok from qr_tokens
-  where token_hash = encode(digest(p_raw, 'sha256'), 'hex')
+  where token_hash = encode(extensions.digest(p_raw, 'sha256'), 'hex')
   order by issued_at desc limit 1 for update;
   if tok.id is not null and tok.consumed_at is not null then
     raise exception 'This QR code was already used. Scan the current code.';
