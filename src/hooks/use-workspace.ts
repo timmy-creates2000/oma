@@ -11,11 +11,13 @@ export type Workspace = {
 export function useWorkspace(): {
   ws: Workspace | null;
   loading: boolean;
+  error: string | null;
   refresh: () => void;
 } {
   const { user, loading: authLoading } = useSupabaseAuth();
   const [ws, setWs] = useState<Workspace | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -28,15 +30,36 @@ export function useWorkspace(): {
         return;
       }
       setLoading(true);
-      const { data: emp, error } = await supabase
-        .from("employees")
-        .select("*, departments(name), branches(name)")
-        .eq("user_id", user.id)
-        .eq("active", true)
-        .maybeSingle();
+      setError(null);
+      // limit(1) instead of maybeSingle(): a duplicate row must never bounce a signed-in
+      // user back to onboarding. A network/DB error is shown as an error, not as "no company".
+      let rows: unknown[] | null = null;
+      let qErr: { message: string } | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await supabase
+          .from("employees")
+          .select("*, departments(name), branches(name)")
+          .eq("user_id", user.id)
+          .eq("active", true)
+          .is("deleted_at", null)
+          .order("joined_at", { ascending: false })
+          .limit(1);
+        rows = res.data;
+        qErr = res.error;
+        if (!qErr) break;
+        await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        if (cancelled) return;
+      }
 
       if (cancelled) return;
-      if (error || !emp) {
+      if (qErr) {
+        setWs(null);
+        setError(qErr.message);
+        setLoading(false);
+        return;
+      }
+      const emp = rows?.[0];
+      if (!emp) {
         setWs(null);
         setLoading(false);
         return;
@@ -67,5 +90,5 @@ export function useWorkspace(): {
     };
   }, [user, authLoading, tick]);
 
-  return { ws, loading, refresh: () => setTick((t) => t + 1) };
+  return { ws, loading, error, refresh: () => setTick((t) => t + 1) };
 }

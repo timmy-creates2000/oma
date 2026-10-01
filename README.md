@@ -21,12 +21,14 @@ npm run dev
 
 ## Supabase setup
 
-The complete database implementation is in:
+Run these two files in the Supabase SQL editor, in this order:
 
-1. `supabase/schema.sql`
-2. `supabase/functions.sql`
+1. `supabase/deploy.sql` (the full database: tables, policies, functions, early clock-out)
+2. `supabase/fixes.sql` (bug fixes: approvals, QR, employee delete, notifications, timezone)
 
-Run both files in the Supabase SQL editor for a new Supabase project. The schema includes tenant isolation, RLS policies, profiles, employees, attendance, devices, QR displays, leave, corrections, notifications, audit logs, and company settings.
+`supabase/schema.sql` and `supabase/functions.sql` are older split copies and do not contain the early clock-out feature. Do not use them for a new project.
+
+For a pilot, turn off "Confirm email" in Supabase, Authentication, Providers, Email. Otherwise new employees cannot sign in until they click a confirmation email, which is the most common reason people cannot log in.
 
 The app uses Supabase Auth with email/password sign-in. The auth trigger creates a profile row, and the onboarding flow calls `create_company` or `join_company` after authentication.
 

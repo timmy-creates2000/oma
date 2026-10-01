@@ -5,13 +5,16 @@ export function GlassCard({
   children,
   className,
   strong = false,
+  onClick,
 }: {
   children?: ReactNode;
   className?: string;
   strong?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
       className={cn(
         "glass glass-edge relative overflow-hidden rounded-2xl",
         strong && "glass-strong",

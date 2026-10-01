@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { Bell, CheckCheck, Plane, Fingerprint, TimerReset, ShieldAlert, Clock3, Loader2 } from "lucide-react";
 import { supabase, err, type Notification } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
+import { useNavigate } from "react-router";
+import { notifRoute } from "@/lib/notif-routes";
 import { useSupabaseAuth } from "@/hooks/use-supabase-auth";
 
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -23,11 +25,16 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   correction_pending: TimerReset,
   correction_approved: CheckCheck,
   correction_rejected: ShieldAlert,
+  early_clockout_pending: TimerReset,
+  early_clockout_approved: CheckCheck,
+  early_clockout_rejected: ShieldAlert,
 };
 
 export default function Notifications() {
   const { ws } = useWorkspace();
   const { user } = useSupabaseAuth();
+  const navigate = useNavigate();
+  const isAdmin = ws?.employee.role !== "employee";
   const [rows, setRows] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -38,7 +45,6 @@ export default function Notifications() {
         .from("notifications")
         .select("*")
         .eq("company_id", ws.employee.company_id)
-        .or(`audience.eq.admins,audience.eq.employee,for_user_id.eq.${user?.id}`)
         .order("created_at", { ascending: false })
         .limit(100);
       setRows((data ?? []) as unknown as Notification[]);
@@ -64,6 +70,12 @@ export default function Notifications() {
     }
   };
 
+  const open = async (n: Notification) => {
+    if (!n.read_at) await markOne(n.id);
+    const to = notifRoute(n.type, isAdmin);
+    if (to !== "/notifications") navigate(to);
+  };
+
   return (
     <AppShell title="Notifications">
       <PageHeader
@@ -87,7 +99,11 @@ export default function Notifications() {
           {rows.map((n) => {
             const Icon = ICONS[n.type] ?? Bell;
             return (
-              <GlassCard key={n.id} className={`flex items-start gap-3.5 p-4 ${n.read_at ? "opacity-60" : ""}`}>
+              <GlassCard
+                key={n.id}
+                className={`flex cursor-pointer items-start gap-3.5 p-4 transition hover:ring-1 hover:ring-primary/30 ${n.read_at ? "opacity-60" : ""}`}
+                onClick={() => open(n)}
+              >
                 <div className="glass-inset mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl">
                   <Icon className="size-4.5 text-primary" />
                 </div>
@@ -100,7 +116,7 @@ export default function Notifications() {
                   <p className="mt-1 text-[11px] text-muted-foreground/70">{new Date(n.created_at).toLocaleString()}</p>
                 </div>
                 {!n.read_at && (
-                  <Button size="sm" variant="ghost" className="h-7 shrink-0 text-xs" onClick={() => markOne(n.id)}>
+                  <Button size="sm" variant="ghost" className="h-7 shrink-0 text-xs" onClick={(e) => { e.stopPropagation(); markOne(n.id); }}>
                     Mark read
                   </Button>
                 )}

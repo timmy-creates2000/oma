@@ -11,6 +11,7 @@ import { GlassCard } from "@/components/glass";
 import { useSession } from "@/hooks/use-auth";
 import { useWorkspace } from "@/hooks/use-workspace";
 import { supabase, type Notification } from "@/lib/sb";
+import { notifRoute } from "@/lib/notif-routes";
 import {
   LayoutDashboard, Radio, Users, Fingerprint, QrCode, CalendarDays,
   Wrench, BarChart3, FileText, Bell, ScrollText, Settings, ScanLine,
@@ -69,6 +70,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [bellOpen, setBellOpen] = useState(false);
 
   const role = ws?.employee.role ?? "employee";
   const isEmployee = role === "employee";
@@ -187,7 +189,7 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <Popover>
+              <Popover open={bellOpen} onOpenChange={setBellOpen}>
                 <PopoverTrigger asChild>
                   <Button variant="ghost" size="icon" className="glass-soft relative size-9 rounded-xl">
                     <Bell className="size-4.5" />
@@ -218,14 +220,26 @@ export function AppShell({ children, title }: { children: ReactNode; title?: str
                       <p className="px-4 py-8 text-center text-sm text-muted-foreground">You&rsquo;re all caught up.</p>
                     )}
                     {notifications.slice(0, 8).map((n) => (
-                     <div key={n.id} className={`border-b px-4 py-3 last:border-0 ${n.read_at ? "opacity-55" : ""}`}>
+                      <button
+                        type="button"
+                        key={n.id}
+                        className={`block w-full border-b px-4 py-3 text-left transition last:border-0 hover:bg-muted/60 ${n.read_at ? "opacity-55" : ""}`}
+                        onClick={async () => {
+                          if (!n.read_at) {
+                            await supabase.rpc("mark_notifications_read", { p_all: false, p_id: n.id });
+                            setNotifications((items) => items.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)));
+                          }
+                          setBellOpen(false);
+                          navigate(notifRoute(n.type, !isEmployee));
+                        }}
+                      >
                         <p className="text-xs font-semibold">{n.title}</p>
-                         <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>
-                      </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{n.body}</p>
+                      </button>
                     ))}
                   </div>
                   <div className="border-t px-4 py-2 text-center">
-                    <Link to="/notifications" className="text-xs text-primary hover:underline">View all</Link>
+                    <Link to="/notifications" onClick={() => setBellOpen(false)} className="text-xs text-primary hover:underline">View all</Link>
                   </div>
                 </PopoverContent>
               </Popover>

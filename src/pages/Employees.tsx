@@ -14,7 +14,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { Users, Search, Plus, RefreshCw, Building2, MapPin } from "lucide-react";
+import { Users, Search, Plus, RefreshCw, Building2, MapPin, Trash2 } from "lucide-react";
 import { supabase, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
 
@@ -265,6 +265,27 @@ export default function Employees() {
         <DialogContent className="glass-strong max-w-sm">
           <DialogHeader><DialogTitle>New department</DialogTitle></DialogHeader>
           <Input placeholder="Engineering" value={deptName} onChange={(e) => setDeptName(e.target.value)} />
+          {departments.length > 0 && (
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border p-2">
+              {departments.map((d) => (
+                <div key={d.id} className="flex items-center justify-between rounded-lg px-2 py-1 text-sm">
+                  <span>{d.name}</span>
+                  <Button size="icon" variant="ghost" className="size-7 text-destructive" aria-label={`Delete ${d.name}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete department "${d.name}"? Employees in it will become unassigned.`)) return;
+                      try {
+                        const { error } = await supabase.rpc("delete_department", { p_id: d.id });
+                        if (error) throw error;
+                        toast.success("Department deleted");
+                        setDepartments((list) => list.filter((x) => x.id !== d.id));
+                      } catch (e) { toast.error(err(e)); }
+                    }}>
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" className="glass" onClick={() => setDeptOpen(false)}>Cancel</Button>
             <Button
@@ -298,6 +319,27 @@ export default function Employees() {
             <Input placeholder="Branch name" value={branchName} onChange={(e) => setBranchName(e.target.value)} />
             <Input placeholder="Address (optional)" value={branchAddr} onChange={(e) => setBranchAddr(e.target.value)} />
           </div>
+          {branches.length > 0 && (
+            <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border p-2">
+              {branches.map((b) => (
+                <div key={b.id} className="flex items-center justify-between rounded-lg px-2 py-1 text-sm">
+                  <span>{b.name}</span>
+                  <Button size="icon" variant="ghost" className="size-7 text-destructive" aria-label={`Delete ${b.name}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete branch "${b.name}"? Employees and QR displays in it will become unassigned.`)) return;
+                      try {
+                        const { error } = await supabase.rpc("delete_branch", { p_id: b.id });
+                        if (error) throw error;
+                        toast.success("Branch deleted");
+                        setBranches((list) => list.filter((x) => x.id !== b.id));
+                      } catch (e) { toast.error(err(e)); }
+                    }}>
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" className="glass" onClick={() => setBranchOpen(false)}>Cancel</Button>
             <Button

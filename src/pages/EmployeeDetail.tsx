@@ -10,7 +10,7 @@ import {
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
-import { ChevronLeft, Smartphone, History, Plane, UserX, ShieldCheck, RefreshCw } from "lucide-react";
+import { ChevronLeft, Smartphone, History, Plane, UserX, Trash2, ShieldCheck, RefreshCw } from "lucide-react";
 import { supabase, fmtTime, fmtDay, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
 
@@ -40,6 +40,7 @@ const STATUS_META: Record<string, string> = {
 export default function EmployeeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [delLogin, setDelLogin] = useState(false);
   const { ws } = useWorkspace();
   const [detail, setDetail] = useState<Detail | null>(null);
 
@@ -93,6 +94,7 @@ export default function EmployeeDetail() {
         title={employee.name}
         subtitle={`${employee.employee_code} · ${employee.position ?? "—"} · ${department ?? "no department"} · ${branch ?? "no branch"}`}
         actions={
+          <div className="flex flex-wrap gap-2">
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="outline" className="glass text-destructive">
@@ -103,7 +105,7 @@ export default function EmployeeDetail() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Deactivate {employee.name}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Their seat is kept and history preserved (soft delete). They can be re-added later by email.
+                  Their history is kept and they lose access. You can add them again later with the same email.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -126,6 +128,44 @@ export default function EmployeeDetail() {
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
+            <AlertDialog onOpenChange={(o) => { if (!o) setDelLogin(false); }}>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" className="glass border-destructive/40 text-destructive">
+                  <Trash2 className="size-4" /> Delete permanently
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent className="glass-strong">
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {employee.name} permanently?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This removes the employee and all their attendance, leave, devices and requests from the database. It cannot be undone. You can add the same email or code again afterwards.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <label className="flex items-start gap-2 text-sm">
+                  <input type="checkbox" className="mt-1" checked={delLogin} onChange={(e) => setDelLogin(e.target.checked)} />
+                  <span>Also delete their sign-in account (they will need to sign up again)</span>
+                </label>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-white hover:bg-destructive/90"
+                    onClick={async () => {
+                      try {
+                        const { error } = await supabase.rpc("delete_employee", { p_employee: employee.id, p_delete_login: delLogin });
+                        if (error) throw error;
+                        toast.success("Employee deleted");
+                        navigate("/employees");
+                      } catch (e) {
+                        toast.error(err(e));
+                      }
+                    }}
+                  >
+                    Delete permanently
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         }
       />
 

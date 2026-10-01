@@ -13,7 +13,8 @@ import {
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
-import { QrCode, Plus, Power, Trash2, ExternalLink } from "lucide-react";
+import { QrCode, Plus, Trash2, ExternalLink } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { supabase, err } from "@/lib/sb";
 import { useWorkspace } from "@/hooks/use-workspace";
 
@@ -125,21 +126,27 @@ export default function QrDisplays() {
               <div className="mt-4 flex flex-wrap gap-2">
                 {d.active && (
                   <Button asChild size="sm" variant="outline" className="glass h-8 text-xs">
-                    <Link to="/kiosk"><ExternalLink className="size-3.5" /> Open kiosk</Link>
+                    <Link to={`/kiosk?display=${d.id}`}><ExternalLink className="size-3.5" /> Open kiosk</Link>
                   </Button>
                 )}
-                <Button size="sm" variant="outline" className="glass h-8 text-xs"
-                  onClick={async () => {
-                    try {
-                      const { error } = await supabase.rpc("toggle_qr_display", { p_id: d.id });
-                      if (error) throw error;
-                      load();
-                    } catch (e) { toast.error(err(e)); }
-                  }}>
-                  <Power className="size-3.5" /> {d.active ? "Disable" : "Enable"}
-                </Button>
+                <label className="flex items-center gap-2 rounded-lg border bg-white/40 px-3 py-1 text-xs font-medium">
+                  <Switch
+                    checked={d.active}
+                    onCheckedChange={async () => {
+                      try {
+                        const { error } = await supabase.rpc("toggle_qr_display", { p_id: d.id });
+                        if (error) throw error;
+                        toast.success(d.active ? "QR turned off. Nobody can scan until you turn it on." : "QR turned on");
+                        load();
+                      } catch (e) { toast.error(err(e)); }
+                    }}
+                    aria-label="Turn this QR on or off"
+                  />
+                  {d.active ? "QR on" : "QR off"}
+                </label>
                 <Button size="sm" variant="outline" className="glass h-8 text-xs text-destructive"
                   onClick={async () => {
+                    if (!window.confirm(`Delete the QR display "${d.label}"? This cannot be undone.`)) return;
                     try {
                       const { error } = await supabase.rpc("delete_qr_display", { p_id: d.id });
                       if (error) throw error;

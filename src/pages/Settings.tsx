@@ -258,7 +258,21 @@ export default function Settings() {
             {leaveTypes.map((t) => (
               <div key={t.id} className="glass-soft flex items-center justify-between rounded-xl px-4 py-2.5 text-sm">
                 <span className="font-medium">{t.name}</span>
-                <span className="text-muted-foreground">{t.annual_quota_days} days · {t.paid ? "paid" : "unpaid"}</span>
+                <span className="flex items-center gap-2 text-muted-foreground">
+                  {t.annual_quota_days} days · {t.paid ? "paid" : "unpaid"}
+                  <Button size="icon" variant="ghost" className="size-7 text-destructive" aria-label={`Delete ${t.name}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete leave type "${t.name}"? Related leave requests and balances will be removed.`)) return;
+                      try {
+                        const { error } = await supabase.rpc("delete_leave_type", { p_id: t.id });
+                        if (error) throw error;
+                        toast.success("Leave type deleted");
+                        setLeaveTypes((list) => list.filter((x) => x.id !== t.id));
+                      } catch (e) { toast.error(err(e)); }
+                    }}>
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </span>
               </div>
             ))}
           </div>
